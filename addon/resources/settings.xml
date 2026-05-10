@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+    <setting id="server_host" type="text" label="Proxy Server IP" default="10.0.0.4"/>
+    <setting id="server_port" type="number" label="Proxy Server Port" default="9191"/>
+</settings>
