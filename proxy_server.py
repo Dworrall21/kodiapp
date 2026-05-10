@@ -545,10 +545,46 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
-    def do_GET(self):
-        path = self.path
+    def serve_html(self, html):
+        content = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
-        # Kodi add-on repository
+    def serve_repo_index(self):
+        self.serve_html("""<!DOCTYPE html>
+<html><head><title>Kodi Xbox Proxy Repo</title></head>
+<body>
+<h1>Kodi Xbox Proxy Repo</h1>
+<ul>
+  <li><a href="addons.xml">addons.xml</a></li>
+  <li><a href="addons.xml.md5">addons.xml.md5</a></li>
+  <li><a href="script.xbox.proxy/">script.xbox.proxy/</a></li>
+</ul>
+</body></html>""")
+
+    def serve_package_index(self):
+        self.serve_html("""<!DOCTYPE html>
+<html><head><title>script.xbox.proxy</title></head>
+<body>
+<h1>script.xbox.proxy</h1>
+<ul>
+  <li><a href="script.xbox.proxy-1.0.0.zip">script.xbox.proxy-1.0.0.zip</a></li>
+</ul>
+</body></html>""")
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+
+        # Kodi add-on repository / browsable source for Kodi File Manager
+        if path == "/repo" or path == "/repo/":
+            self.serve_repo_index()
+            return
+        if path == "/repo/script.xbox.proxy" or path == "/repo/script.xbox.proxy/":
+            self.serve_package_index()
+            return
         if path == "/repo/addons.xml" or path == "/repo/addons.xml/":
             self.serve_file("addons.xml", "text/xml")
             return
