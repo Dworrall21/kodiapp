@@ -1,23 +1,39 @@
 """HTTP request handler for the proxy server."""
 
-import hashlib
+import asyncio
+import base64
+import gzip
 import json
 import os
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import http.server
 
+from . import state
 from .compression import gzip_compress
 from .config import ADDON_REQUEST_TIMEOUT, PROJECT_DIR, WS_SEND_TIMEOUT, SSE_KEEPALIVE
-from .state import addon_info, addon_lock, addon_ws, pending, sse_clients, sse_lock
-from .websocket_server import ws_loop, ws_send_compressed
+from .websocket_server import ws_send_compressed
 from .web_ui import WEB_UI_HTML
+
+HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
 
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for dashboard, API, repo, and Kodi proxy."""
+
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, format, *args):
         pass
@@ -67,9 +83,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if path in ("/repo/script.xbox.proxy", "/repo/script.xbox.proxy/"):
             self.serve_html(self._package_index_html(), send_body=send_body)
             return True
-        if path in ("/repo/script.kodi.proxytest", "/repo/script.kodi.proxytest/"):
-            self.serve_html(self._proxytest_index_html(), send_body=send_body)
-            return True
         if path in ("/repo/addons.xml", "/repo/addons.xml/"):
             self.serve_file("addons.xml", "text/xml", send_body=send_body)
             return True
@@ -77,33 +90,15 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self._serve_addons_md5(send_body)
             return True
         if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.4.zip",
-                     "/repo/script.xbox.proxy/script.xbox.proxy-1.0.4.zip/"):
+                    "/repo/script.xbox.proxy/script.xbox.proxy-1.0.4.zip/"):
             self.serve_file("addon.zip", "application/zip", as_attachment=False, send_body=send_body)
-            return True
-        if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.3.zip",
-                     "/repo/script.xbox.proxy/script.xbox.proxy-1.0.3.zip/"):
-            self.serve_file("addon.zip", "application/zip", as_attachment=False, send_body=send_body)
-            return True
-        if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.2.zip",
-                     "/repo/script.xbox.proxy/script.xbox.proxy-1.0.2.zip/"):
-            self.serve_file("addon-safe.zip", "application/zip", as_attachment=False, send_body=send_body)
-            return True
-        if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.1.zip",
-                     "/repo/script.xbox.proxy/script.xbox.proxy-1.0.1.zip/",
-                     "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip",
-                     "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip/"):
-            self.serve_file("addon.zip", "application/zip", as_attachment=False, send_body=send_body)
-            return True
-        if path in ("/repo/script.kodi.proxytest/script.kodi.proxytest-0.0.1.zip",
-                     "/repo/script.kodi.proxytest/script.kodi.proxytest-0.0.1.zip/"):
-            self.serve_file("proxytest.zip", "application/zip", as_attachment=False, send_body=send_body)
             return True
         return False
 
     def _serve_addons_md5(self, send_body):
         try:
             content = open(os.path.join(PROJECT_DIR, "addons.xml"), "rb").read()
-            md5 = hashlib.md5(content).hexdigest()
+            md5 = __import__("hashlib").md5(content).hexdigest()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(md5)))
@@ -122,7 +117,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             '<li><a href="addons.xml">addons.xml</a></li>'
             '<li><a href="addons.xml.md5">addons.xml.md5</a></li>'
             '<li><a href="script.xbox.proxy/">script.xbox.proxy/</a></li>'
-            '<li><a href="script.kodi.proxytest/">script.kodi.proxytest/</a> ultra-minimal diagnostic</li>'
             '</ul></body></html>'
         )
 
@@ -131,19 +125,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         return (
             '<!DOCTYPE html><html><head><title>script.xbox.proxy</title></head><body>'
             '<h1>script.xbox.proxy</h1><ul>'
-            '<li><a href="script.xbox.proxy-1.0.4.zip">script.xbox.proxy-1.0.4.zip</a> full service package (with compression)</li>'
-            '<li><a href="script.xbox.proxy-1.0.3.zip">script.xbox.proxy-1.0.3.zip</a> full service package (with compression)</li>'
-            '<li><a href="script.xbox.proxy-1.0.2.zip">script.xbox.proxy-1.0.2.zip</a> safe diagnostic package</li>'
-            '<li><a href="script.xbox.proxy-1.0.1.zip">script.xbox.proxy-1.0.1.zip</a> full service package</li>'
-            '</ul></body></html>'
-        )
-
-    @staticmethod
-    def _proxytest_index_html():
-        return (
-            '<!DOCTYPE html><html><head><title>script.kodi.proxytest</title></head><body>'
-            '<h1>script.kodi.proxytest</h1><ul>'
-            '<li><a href="script.kodi.proxytest-0.0.1.zip">script.kodi.proxytest-0.0.1.zip</a> metadata-only diagnostic package</li>'
+            '<li><a href="script.xbox.proxy-1.0.4.zip">script.xbox.proxy-1.0.4.zip</a></li>'
             '</ul></body></html>'
         )
 
@@ -163,34 +145,33 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/events":
             self.handle_sse()
             return
-
         if path in ("/", "/index.html"):
             self._serve_web_ui()
             return
-
         if path.startswith("/api/"):
-            self.handle_api(path[5:])
+            self.handle_api(self.path[5:])
+            return
+        if path.startswith("/_kodi_"):
+            self.proxy_to_kodi("GET")
             return
 
-        self.proxy_to_kodi("GET")
+        self.send_json(404, {"error": "Not found"})
 
     def do_POST(self):
         if self.path.startswith("/api/"):
             self.handle_api(self.path[5:])
             return
-        self.proxy_to_kodi("POST")
-
-    def do_PUT(self):
-        self.proxy_to_kodi("PUT")
-
-    def do_DELETE(self):
-        self.proxy_to_kodi("DELETE")
+        if self.path.split("?", 1)[0].startswith("/_kodi_"):
+            self.proxy_to_kodi("POST")
+            return
+        self.send_json(404, {"error": "Not found"})
 
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     # --- Web UI ---
@@ -226,11 +207,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         queue = []
         ready = threading.Event()
-        with sse_lock:
-            sse_clients.append((queue, ready))
+        with state.sse_lock:
+            state.sse_clients.append((queue, ready))
 
         try:
-            self.wfile.write(b"event: connected\ndata: {}\n\n")
+            self.wfile.write(b"data: {\"type\":\"connected\",\"data\":{}}\n\n")
             self.wfile.flush()
 
             while True:
@@ -240,10 +221,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 while queue:
                     event = queue.pop(0)
                     try:
-                        data = json.dumps(event)
-                        self.wfile.write(
-                            f"event: {event.get('type', 'message')}\ndata: {data}\n\n".encode()
-                        )
+                        data = json.dumps(event, default=str)
+                        # Browser code uses EventSource.onmessage, so do not send named SSE events.
+                        self.wfile.write(f"data: {data}\n\n".encode())
                         self.wfile.flush()
                     except Exception:
                         return
@@ -256,36 +236,39 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             pass
         finally:
-            with sse_lock:
+            with state.sse_lock:
                 try:
-                    sse_clients.remove((queue, ready))
+                    state.sse_clients.remove((queue, ready))
                 except ValueError:
                     pass
 
     # --- API ---
 
     def handle_api(self, path):
-        global addon_info
-
         if path in ("status", "status/"):
-            with addon_lock:
-                ws = addon_ws
-                info = addon_info
+            with state.addon_lock:
+                ws = state.addon_ws
+                info = state.addon_info
             self.send_json(200, {"connected": ws is not None, "info": info})
+            return
 
-        elif path.startswith("logs"):
+        if path.startswith("logs"):
             lines = 200
-            if "?" in path:
-                qs = path.split("?", 1)[1]
-                for param in qs.split("&"):
-                    if param.startswith("lines="):
+            raw_query = urlsplit("/api/" + path).query
+            for param in raw_query.split("&") if raw_query else []:
+                if param.startswith("lines="):
+                    try:
                         lines = int(param.split("=", 1)[1])
+                    except ValueError:
+                        pass
             self.send_request_to_addon("get_logs", {"lines": lines}, timeout=ADDON_REQUEST_TIMEOUT)
+            return
 
-        elif path in ("info", "info/"):
-            self.send_request_to_addon("get_info", {}, timeout=10)
+        if path in ("info", "info/"):
+            self.send_json(200, {"connected": state.addon_ws is not None, "info": state.addon_info})
+            return
 
-        elif path in ("command", "command/"):
+        if path in ("command", "command/"):
             body = self.read_body()
             try:
                 data = json.loads(body) if body else {}
@@ -293,110 +276,118 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(400, {"error": "Invalid JSON"})
                 return
             self.send_request_to_addon(
-                "kodi_command",
+                "jsonrpc",
                 {"method": data.get("method", ""), "params": data.get("params", {})},
                 timeout=ADDON_REQUEST_TIMEOUT,
             )
-        else:
-            self.send_json(404, {"error": "Unknown API endpoint"})
+            return
+
+        if path in ("events", "events/"):
+            self.send_json(200, {"events": state.latest_event_log})
+            return
+
+        self.send_json(404, {"error": "Unknown API endpoint"})
 
     # --- Proxy to Kodi ---
 
-    def proxy_to_kodi(self, method):
-        with addon_lock:
-            ws = addon_ws
-        if not ws:
-            self.send_json(503, {"error": "Kodi add-on not connected"})
-            return
+    def _kodi_path(self):
+        path = self.path
+        if path.startswith("/_kodi_/"):
+            return "/" + path[len("/_kodi_/"):]
+        if path == "/_kodi_":
+            return "/"
+        if path.startswith("/_kodi_?"):
+            return "/" + path[len("/_kodi_"):]
+        return path
 
+    def proxy_to_kodi(self, method):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
-        request_id = str(uuid.uuid4())
-        event = threading.Event()
-        pending[request_id] = {"event": event, "response": None}
-
-        tunnel_msg = {
-            "type": "request",
-            "id": request_id,
-            "method": method,
-            "path": self.path,
-            "headers": {key: self.headers[key] for key in self.headers},
-            "body": body.decode("utf-8", errors="replace"),
+        headers = {
+            key: self.headers[key]
+            for key in self.headers
+            if key.lower() not in HOP_HEADERS
         }
 
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                ws_send_compressed(ws, tunnel_msg), ws_loop
-            )
-            future.result(timeout=WS_SEND_TIMEOUT)
-        except Exception as e:
-            pending.pop(request_id, None)
-            self.send_json(502, {"error": f"Failed to reach add-on: {e}"})
-            return
+        msg = {
+            "type": "http_request",
+            "method": method,
+            "path": self._kodi_path(),
+            "headers": headers,
+        }
+        if body:
+            msg["body"] = base64.b64encode(body).decode("ascii")
+            msg["body_encoding"] = "base64"
 
-        if not event.wait(timeout=ADDON_REQUEST_TIMEOUT):
-            pending.pop(request_id, None)
-            self.send_json(504, {"error": "Timed out waiting for Kodi"})
-            return
-
-        response = pending.pop(request_id, {}).get("response")
-        if not response:
-            self.send_json(502, {"error": "No response from add-on"})
-            return
-
-        self.send_response(response.get("status", 200))
-        for key, val in response.get("headers", {}).items():
-            if key.lower() not in ("transfer-encoding", "connection"):
-                self.send_header(key, val)
-        self.end_headers()
-        resp_body = response.get("body", "")
-        if isinstance(resp_body, str):
-            resp_body = resp_body.encode("utf-8")
-        self.wfile.write(resp_body)
-
-    # --- Helpers ---
-
-    def send_request_to_addon(self, msg_type, data, timeout=ADDON_REQUEST_TIMEOUT):
-        with addon_lock:
-            ws = addon_ws
-        if not ws:
-            self.send_json(503, {"error": "Kodi add-on not connected"})
-            return
-
-        request_id = str(uuid.uuid4())
-        event = threading.Event()
-        pending[request_id] = {"event": event, "response": None}
-
-        msg = {"type": msg_type, "id": request_id, **data}
-
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                ws_send_compressed(ws, msg), ws_loop
-            )
-            future.result(timeout=WS_SEND_TIMEOUT)
-        except Exception as e:
-            pending.pop(request_id, None)
-            self.send_json(502, {"error": str(e)})
-            return
-
-        if not event.wait(timeout=timeout):
-            pending.pop(request_id, None)
-            self.send_json(504, {"error": "Timed out"})
-            return
-
-        response = pending.pop(request_id, {}).get("response")
-        if not response:
-            self.send_json(502, {"error": "No response"})
+        response = self.roundtrip_to_addon(msg, timeout=ADDON_REQUEST_TIMEOUT)
+        if response is None:
             return
 
         status = response.get("status", 200)
-        body = response.get("body", {})
-        if isinstance(body, str):
+        headers = response.get("headers", {}) or {}
+        raw_body = response.get("body", "")
+        encoding = response.get("body_encoding", "utf-8")
+        if encoding == "base64":
             try:
-                body = json.loads(body)
-            except json.JSONDecodeError:
-                pass
+                resp_body = base64.b64decode(raw_body)
+            except Exception:
+                self.send_json(502, {"error": "Invalid base64 response body from add-on"})
+                return
+        elif isinstance(raw_body, str):
+            resp_body = raw_body.encode("utf-8")
+        else:
+            resp_body = raw_body or b""
+
+        self.send_response(status)
+        for key, val in headers.items():
+            if key.lower() not in HOP_HEADERS and key.lower() != "content-length":
+                self.send_header(key, str(val))
+        self.send_header("Content-Length", str(len(resp_body)))
+        self.end_headers()
+        self.wfile.write(resp_body)
+
+    # --- Add-on request helpers ---
+
+    def roundtrip_to_addon(self, msg, timeout=ADDON_REQUEST_TIMEOUT):
+        with state.addon_lock:
+            ws = state.addon_ws
+            loop = state.ws_loop
+        if not ws or not loop:
+            self.send_json(503, {"error": "Kodi add-on not connected"})
+            return None
+
+        request_id = msg.get("id") or str(uuid.uuid4())
+        msg["id"] = request_id
+        event = threading.Event()
+        state.pending[request_id] = {"event": event, "response": None}
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(ws_send_compressed(ws, msg), loop)
+            future.result(timeout=WS_SEND_TIMEOUT)
+        except Exception as e:
+            state.pending.pop(request_id, None)
+            self.send_json(502, {"error": f"Failed to reach add-on: {e}"})
+            return None
+
+        if not event.wait(timeout=timeout):
+            state.pending.pop(request_id, None)
+            self.send_json(504, {"error": "Timed out waiting for Kodi"})
+            return None
+
+        response = state.pending.pop(request_id, {}).get("response")
+        if not response:
+            self.send_json(502, {"error": "No response from add-on"})
+            return None
+        return response
+
+    def send_request_to_addon(self, msg_type, data, timeout=ADDON_REQUEST_TIMEOUT):
+        msg = {"type": msg_type, **(data or {})}
+        response = self.roundtrip_to_addon(msg, timeout=timeout)
+        if response is None:
+            return
+        status = response.get("status", 200)
+        body = response.get("body", {})
         self.send_json(status, body)
 
     def read_body(self):
@@ -422,5 +413,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)

@@ -11,6 +11,10 @@ addon_ws = None
 addon_lock = threading.Lock()
 addon_info = None
 
+# Asyncio loop that owns the WebSocket server. HTTP handler threads use this
+# with asyncio.run_coroutine_threadsafe().
+ws_loop = None
+
 # SSE clients: list of (queue, event) tuples for real-time event delivery
 sse_clients = []
 sse_lock = threading.Lock()
@@ -27,11 +31,11 @@ def broadcast_event(event_type: str, data: dict) -> None:
 
     event = {
         "type": event_type,
-        "data": data,
+        "data": data or {},
         "timestamp": time.time(),
     }
 
-    if event_type == "stats_update":
+    if event_type in ("stats_update", "telemetry"):
         latest_stats = event
 
     latest_event_log.append(event)
