@@ -519,12 +519,54 @@ setInterval(checkStatus, 5000);
 # HTTP Server
 # ============================================================
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def serve_file(self, filename, content_type, as_attachment=False):
+        """Serve a file from the project directory."""
+        filepath = os.path.join(PROJECT_DIR, filename)
+        if not os.path.isfile(filepath):
+            self.send_json(404, {"error": f"{filename} not found"})
+            return
+        try:
+            with open(filepath, "rb") as f:
+                content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            if as_attachment:
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
     def do_GET(self):
         path = self.path
+
+        # Kodi add-on repository
+        if path == "/repo/addons.xml" or path == "/repo/addons.xml/":
+            self.serve_file("addons.xml", "text/xml")
+            return
+        if path == "/repo/addons.xml.md5" or path == "/repo/addons.xml.md5/":
+            import hashlib
+            try:
+                content = open(os.path.join(PROJECT_DIR, "addons.xml"), "rb").read()
+                md5 = hashlib.md5(content).hexdigest()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(md5.encode())
+            except FileNotFoundError:
+                self.send_json(404, {"error": "addons.xml not found"})
+            return
+        if path == "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip" or path == "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip/":
+            self.serve_file("addon.zip", "application/zip", as_attachment=False)
+            return
 
         # SSE endpoint for real-time events
         if path == "/api/events":
