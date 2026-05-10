@@ -4,6 +4,7 @@ import threading
 import time
 import xbmc
 import xbmcaddon
+import xbmcgui
 
 ADDON = xbmcaddon.Addon()
 ADDON_NAME = ADDON.getAddonInfo("id")
@@ -18,23 +19,20 @@ def log(msg):
 
 
 def get_kodi_log_path():
-    """Find Kodi's log file path. Varies by platform."""
-    # Xbox UWP Kodi log locations
+    """Find Kodi's log file path."""
     candidates = [
         os.path.join(xbmc.translatepath("special://logpath"), "kodi.log"),
         os.path.join(xbmc.translatepath("special://home"), "temp", "kodi.log"),
         os.path.join(xbmc.translatepath("special://temp"), "kodi.log"),
-        # Windows/UWP specific
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Packages"),
     ]
     for path in candidates:
         if path and os.path.isfile(path):
             return path
-    # Try to find it
     home = xbmc.translatepath("special://home")
-    for root, dirs, files in os.walk(home):
-        if "kodi.log" in files:
-            return os.path.join(root, "kodi.log")
+    if os.path.isdir(home):
+        for root, dirs, files in os.walk(home):
+            if "kodi.log" in files:
+                return os.path.join(root, "kodi.log")
     return None
 
 
@@ -43,7 +41,6 @@ def read_kodi_logs(lines=200):
     log_path = get_kodi_log_path()
     if not log_path:
         return {"error": "Could not find kodi.log", "path": None}
-
     try:
         with open(log_path, "r", errors="replace") as f:
             all_lines = f.readlines()
@@ -69,9 +66,63 @@ def get_kodi_info():
         return {"version": "unknown"}
 
 
-class SimpleWSClient:
-    """Minimal WebSocket client using only Python stdlib."""
+def get_now_playing():
+    """Get currently playing media info."""
+    try:
+        player = xbmc.Player()
+        if not player.isPlaying():
+            return {"playing": False}
 
+        info = {"playing": True}
+        try:
+            info["title"] = player.getVideoInfoTag().getTitle() or player.getMusicInfoTag().getTitle()
+        except:
+            pass
+        try:
+            info["duration"] = player.getTotalTime()
+            info["time"] = player.getTime()
+            info["progress"] = (player.getTime() / player.getTotalTime() * 100) if player.getTotalTime() > 0 else 0
+        except:
+            pass
+        try:
+            info["player_type"] = "video" if player.isPlayingVideo() else "audio"
+        except:
+            pass
+        return info
+    except:
+        return {"playing": False}
+
+
+def get_system_stats():
+    """Get system resource usage."""
+    try:
+        return {
+            "cpu": xbmc.getInfoLabel("System.CPUUsage"),
+            "memory_free": xbmc.getInfoLabel("System.Memory(free)"),
+            "memory_total": xbmc.getInfoLabel("System.Memory(total)"),
+            "uptime": xbmc.getInfoLabel("System.TotalUptime"),
+            "temperature": xbmc.getInfoLabel("System.Temperature"),
+        }
+    except:
+        return {}
+
+
+def get_volume_info():
+    """Get current volume state."""
+    try:
+        return {
+            "volume": xbmc.getInfoLabel("Player.Volume"),
+            "muted": xbmc.getInfoLabel("Player.Muted") == "true",
+        }
+    except:
+        return {}
+
+
+# ============================================================
+# Minimal WebSocket client (pure stdlib)
+# ============================================================
+
+class SimpleWSClient:
     def __init__(self, host, port, path="/"):
         self.host = host
         self.port = port
@@ -160,42 +211,33 @@ class SimpleWSClient:
 
     def _recv_frame(self):
         import struct
-
         header = self._recv_exact(2)
         if not header:
             return None
-
         fin_op = header[0]
         opcode = fin_op & 0x0F
         payload_len = header[1] & 0x7F
         masked = bool(header[1] & 0x80)
-
         if opcode == 0x8:
             return None
         if opcode == 0x9:
-            pong = bytes([0x8A, 0x00])
-            self.sock.sendall(pong)
+            self.sock.sendall(bytes([0x8A, 0x00]))
             return self._recv_frame()
-
         if payload_len == 126:
             ext = self._recv_exact(2)
             payload_len = struct.unpack("!H", ext)[0]
         elif payload_len == 127:
             ext = self._recv_exact(8)
             payload_len = struct.unpack("!Q", ext)[0]
-
         if masked:
             mask_key = self._recv_exact(4)
         else:
             mask_key = None
-
         payload = self._recv_exact(payload_len)
         if payload is None:
             return None
-
         if mask_key:
             payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-
         if opcode == 0x1:
             return payload.decode("utf-8", errors="replace")
         return ""
@@ -218,10 +260,8 @@ class SimpleWSClient:
         import struct
         if isinstance(message, str):
             message = message.encode("utf-8")
-
         mask_key = os.urandom(4)
         masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(message))
-
         length = len(masked)
         if length < 126:
             header = bytes([0x81, 0x80 | length])
@@ -229,7 +269,6 @@ class SimpleWSClient:
             header = bytes([0x81, 0x80 | 126]) + struct.pack("!H", length)
         else:
             header = bytes([0x81, 0x80 | 127]) + struct.pack("!Q", length)
-
         self.sock.sendall(header + mask_key + masked)
 
     def close(self):
@@ -243,12 +282,83 @@ class SimpleWSClient:
                 pass
 
 
+# ============================================================
+# Kodi Event Monitor — captures notifications and pushes them
+# ============================================================
+
+class KodiEventMonitor(xbmc.Monitor):
+    """Listens for Kobi events and pushes them to the proxy."""
+
+    def __init__(self, on_event_callback):
+        super().__init__()
+        self._on_event = on_event_callback
+
+    def onPlayBackStarted(self):
+        self._push_event("playback_started", get_now_playing())
+
+    def onPlayBackStopped(self):
+        self._push_event("playback_stopped", {})
+
+    def onPlayBackPaused(self):
+        self._push_event("playback_paused", get_now_playing())
+
+    def onPlayBackResumed(self):
+        self._push_event("playback_resumed", get_now_playing())
+
+    def onPlayBackSeek(self, time_val, seek_offset):
+        self._push_event("playback_seek", {"time": time_val, "offset": seek_offset})
+
+    def onPlayBackSpeedChanged(self, speed):
+        self._push_event("playback_speed", {"speed": speed})
+
+    def onVolumeChanged(self, volume):
+        self._push_event("volume_changed", get_volume_info())
+
+    def onScreensaverActivated(self):
+        self._push_event("screensaver_on", {})
+
+    def onScreensaverDeactivated(self):
+        self._push_event("screensaver_off", {})
+
+    def onNotification(self, sender, method, data):
+        # Forward all Kodi notifications
+        try:
+            data_obj = json.loads(data) if data else {}
+        except:
+            data_obj = {"raw": data}
+        self._push_event("notification", {
+            "sender": sender,
+            "method": method,
+            "data": data_obj,
+        })
+
+    def onSettingsChanged(self):
+        self._push_event("settings_changed", {})
+
+    def _push_event(self, event_type, data):
+        """Send event to proxy via callback."""
+        if self._on_event:
+            self._push_safe(event_type, data)
+
+    def _push_safe(self, event_type, data):
+        try:
+            self._on_event(event_type, data)
+        except Exception as e:
+            log(f"Event push error: {e}")
+
+
+# ============================================================
+# Proxy Service — manages connection and handles requests
+# ============================================================
+
 class ProxyService:
     def __init__(self):
         self.ws = None
         self.running = True
         self.connected = False
         self._reconnect_delay = 5
+        self._monitor = None
+        self._stats_thread = None
 
     def connect(self):
         log(f"Connecting to proxy at {SERVER_HOST}:{SERVER_PORT}")
@@ -260,25 +370,56 @@ class ProxyService:
                 self.ws.on_close = self.on_close
                 self.ws.on_error = self.on_error
                 self.ws.connect()
-                # If connect() returns, connection was lost
             except Exception as e:
                 log(f"Connection error: {e}")
-
             self.connected = False
             if not self.running:
                 break
             log(f"Reconnecting in {self._reconnect_delay}s...")
             time.sleep(self._reconnect_delay)
-            # Exponential backoff up to 60s
             self._reconnect_delay = min(self._reconnect_delay * 2, 60)
+
+    def push_event(self, event_type, data):
+        """Push a real-time event to the proxy."""
+        if self.ws and self.connected:
+            try:
+                msg = json.dumps({"type": "event", "event": event_type, "data": data})
+                self.ws.send(msg)
+            except Exception as e:
+                log(f"Failed to push event: {e}")
 
     def on_open(self, ws):
         self.connected = True
-        self._reconnect_delay = 5  # Reset backoff
+        self._reconnect_delay = 5
         log("Connected to proxy server")
+
         # Send hello with Kodi info
         info = get_kodi_info()
         ws.send(json.dumps({"type": "connected", "info": info}))
+
+        # Start Kodi event monitor
+        self._monitor = KodiEventMonitor(self.push_event)
+
+        # Start periodic stats polling
+        self._stats_thread = threading.Thread(target=self._stats_loop, daemon=True)
+        self._stats_thread.start()
+
+    def _stats_loop(self):
+        """Push system stats every 10 seconds."""
+        while self.running and self.connected:
+            try:
+                stats = get_system_stats()
+                now_playing = get_now_playing()
+                volume = get_volume_info()
+                self.push_event("stats_update", {
+                    "stats": stats,
+                    "now_playing": now_playing,
+                    "volume": volume,
+                    "timestamp": time.time(),
+                })
+            except Exception as e:
+                log(f"Stats error: {e}")
+            time.sleep(10)
 
     def on_message(self, ws, message):
         try:
@@ -314,15 +455,12 @@ class ProxyService:
         try:
             req_data = body.encode("utf-8") if body else None
             req = urllib.request.Request(url, data=req_data, method=method)
-
             for key, val in headers.items():
                 if key.lower() not in ("host", "connection"):
                     req.add_header(key, val)
-
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp_body = resp.read()
                 resp_headers = dict(resp.getheaders())
-
             response = {
                 "type": "response",
                 "id": req_id,
@@ -330,7 +468,6 @@ class ProxyService:
                 "headers": resp_headers,
                 "body": resp_body.decode("utf-8", errors="replace"),
             }
-
         except urllib.error.HTTPError as e:
             response = {
                 "type": "response",
@@ -354,37 +491,25 @@ class ProxyService:
             log(f"Failed to send response: {e}")
 
     def handle_get_logs(self, ws, data):
-        """Read and return Kodi's debug log."""
         req_id = data.get("id", "0")
         lines = data.get("lines", 200)
-        log(f"Reading last {lines} lines of kodi.log")
         result = read_kodi_logs(lines)
-        response = {
-            "type": "logs",
-            "id": req_id,
-            "data": result,
-        }
+        response = {"type": "logs", "id": req_id, "data": result}
         try:
             ws.send(json.dumps(response))
         except Exception as e:
             log(f"Failed to send logs: {e}")
 
     def handle_get_info(self, ws, data):
-        """Return Kodi system info."""
         req_id = data.get("id", "0")
         info = get_kodi_info()
-        response = {
-            "type": "info",
-            "id": req_id,
-            "data": info,
-        }
+        response = {"type": "info", "id": req_id, "data": info}
         try:
             ws.send(json.dumps(response))
         except Exception as e:
             log(f"Failed to send info: {e}")
 
     def handle_kodi_command(self, ws, data):
-        """Execute a Kodi JSON-RPC command directly."""
         req_id = data.get("id", "0")
         method = data.get("method", "")
         params = data.get("params", {})
@@ -393,35 +518,23 @@ class ProxyService:
         import urllib.error
 
         url = f"http://127.0.0.1:{KODI_PORT}/jsonrpc"
-        rpc_body = json.dumps({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": 1,
-        })
+        rpc_body = json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
 
         try:
             req = urllib.request.Request(
-                url,
-                data=rpc_body.encode("utf-8"),
-                method="POST",
+                url, data=rpc_body.encode("utf-8"), method="POST",
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp_body = resp.read()
-
             response = {
-                "type": "command_result",
-                "id": req_id,
-                "status": resp.status,
-                "body": resp_body.decode("utf-8", errors="replace"),
+                "type": "command_result", "id": req_id,
+                "status": resp.status, "body": resp_body.decode("utf-8", errors="replace"),
             }
         except Exception as e:
             response = {
-                "type": "command_result",
-                "id": req_id,
-                "status": 500,
-                "body": f"Command error: {e}",
+                "type": "command_result", "id": req_id,
+                "status": 500, "body": f"Command error: {e}",
             }
 
         try:
@@ -431,6 +544,7 @@ class ProxyService:
 
     def on_close(self, ws):
         self.connected = False
+        self._monitor = None
         log("Disconnected from proxy")
 
     def on_error(self, ws, error):
@@ -439,6 +553,7 @@ class ProxyService:
 
     def stop(self):
         self.running = False
+        self._monitor = None
         if self.ws:
             self.ws.close()
 
