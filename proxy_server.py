@@ -619,6 +619,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 <body>
 <h1>script.xbox.proxy</h1>
 <ul>
+  <li><a href="script.xbox.proxy-1.0.4.zip">script.xbox.proxy-1.0.4.zip</a> full service package (with compression)</li>
   <li><a href="script.xbox.proxy-1.0.3.zip">script.xbox.proxy-1.0.3.zip</a> full service package (with compression)</li>
   <li><a href="script.xbox.proxy-1.0.2.zip">script.xbox.proxy-1.0.2.zip</a> safe diagnostic package</li>
   <li><a href="script.xbox.proxy-1.0.1.zip">script.xbox.proxy-1.0.1.zip</a> full service package</li>
@@ -696,6 +697,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             return True
         if path in ("/repo/script.kodi.proxytest/script.kodi.proxytest-0.0.1.zip", "/repo/script.kodi.proxytest/script.kodi.proxytest-0.0.1.zip/"):
             self.serve_file("proxytest.zip", "application/zip", as_attachment=False, send_body=send_body)
+            return True
+        if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.4.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.4.zip/"):
+            self.serve_file("addon.zip", "application/zip", as_attachment=False, send_body=send_body)
             return True
         if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.3.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.3.zip/"):
             self.serve_file("addon.zip", "application/zip", as_attachment=False, send_body=send_body)

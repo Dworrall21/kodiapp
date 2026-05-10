@@ -238,7 +238,12 @@ class SimpleWSClient:
         if opcode == 0x8:
             return None
         if opcode == 0x9:
-            self.sock.sendall(bytes([0x8A, 0x00]))
+            # Send masked pong (RFC 6455: client-to-server frames MUST be masked)
+            mask_key = os.urandom(4)
+            pong_payload = b""
+            masked_pong = bytes(b ^ mask_key[i % 4] for i, b in enumerate(pong_payload))
+            pong_frame = bytes([0x8A, 0x80 | len(masked_pong)]) + mask_key + masked_pong
+            self.sock.sendall(pong_frame)
             return self._recv_frame()
         if payload_len == 126:
             ext = self._recv_exact(2)
