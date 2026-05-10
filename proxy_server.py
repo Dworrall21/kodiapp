@@ -571,7 +571,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 <body>
 <h1>script.xbox.proxy</h1>
 <ul>
-  <li><a href="script.xbox.proxy-1.0.1.zip">script.xbox.proxy-1.0.1.zip</a></li>
+  <li><a href="script.xbox.proxy-1.0.2.zip">script.xbox.proxy-1.0.2.zip</a> safe diagnostic package</li>
+  <li><a href="script.xbox.proxy-1.0.1.zip">script.xbox.proxy-1.0.1.zip</a> full service package</li>
 </ul>
 </body></html>""")
 
@@ -599,6 +600,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(md5.encode())
             except FileNotFoundError:
                 self.send_json(404, {"error": "addons.xml not found"})
+            return
+        if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.2.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.2.zip/"):
+            self.serve_file("addon-safe.zip", "application/zip", as_attachment=False)
             return
         if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.1.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.1.zip/", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip/"):
             self.serve_file("addon.zip", "application/zip", as_attachment=False)
