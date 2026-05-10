@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import http.server
 import json
 import os
@@ -6,12 +7,53 @@ import sys
 import threading
 import time
 import uuid
+import zlib
 import websockets
 
 # --- Config ---
 HTTP_HOST = "0.0.0.0"
 HTTP_PORT = 8080
 WS_PORT = 9191
+
+# Compression settings
+COMPRESSION_ENABLED = True  # Enable zlib compression on WebSocket and gzip on HTTP
+COMPRESSION_LEVEL = 6       # zlib level 1-9 (6 = good balance of speed/ratio)
+COMPRESSION_MIN_SIZE = 64   # Don't compress payloads smaller than this
+
+
+def ws_compress(data):
+    """Compress bytes for WebSocket transport. Returns bytes with 1-byte flag prefix."""
+    if not COMPRESSION_ENABLED or len(data) < COMPRESSION_MIN_SIZE:
+        return b"\x00" + data
+    compressed = zlib.compress(data, COMPRESSION_LEVEL)
+    if len(compressed) < len(data):
+        return b"\x01" + compressed
+    return b"\x00" + data
+
+
+def ws_decompress(data):
+    """Decompress bytes from WebSocket transport. First byte is compression flag."""
+    if not data:
+        return data
+    flag = data[0:1]
+    payload = data[1:]
+    if flag == b"\x01":
+        try:
+            return zlib.decompress(payload)
+        except zlib.error:
+            return payload
+    return payload
+
+
+def gzip_compress(data):
+    """Compress bytes with gzip for HTTP responses."""
+    if not COMPRESSION_ENABLED or len(data) < COMPRESSION_MIN_SIZE:
+        return data, False
+    compressed = gzip.compress(data, compresslevel=COMPRESSION_LEVEL)
+    if len(compressed) < len(data):
+        return compressed, True
+    return data, False
+
 
 # Shared state
 pending = {}
@@ -526,7 +568,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def serve_file(self, filename, content_type, as_attachment=False):
+    def serve_file(self, filename, content_type="application/octet-stream", as_attachment=True, send_body=True):
         """Serve a file from the project directory."""
         filepath = os.path.join(PROJECT_DIR, filename)
         if not os.path.isfile(filepath):
@@ -538,20 +580,25 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "close")
             if as_attachment:
                 self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.end_headers()
-            self.wfile.write(content)
+            if send_body:
+                self.wfile.write(content)
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
-    def serve_html(self, html):
+    def serve_html(self, html, send_body=True):
         content = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
+        self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(content)
+        if send_body:
+            self.wfile.write(content)
 
     def serve_repo_index(self):
         self.serve_html("""<!DOCTYPE html>
@@ -562,6 +609,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
   <li><a href="addons.xml">addons.xml</a></li>
   <li><a href="addons.xml.md5">addons.xml.md5</a></li>
   <li><a href="script.xbox.proxy/">script.xbox.proxy/</a></li>
+  <li><a href="script.kodi.proxytest/">script.kodi.proxytest/</a> ultra-minimal diagnostic</li>
 </ul>
 </body></html>""")
 
@@ -576,19 +624,57 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 </ul>
 </body></html>""")
 
-    def do_GET(self):
+    def serve_proxytest_index(self):
+        self.serve_html("""<!DOCTYPE html>
+<html><head><title>script.kodi.proxytest</title></head>
+<body>
+<h1>script.kodi.proxytest</h1>
+<ul>
+  <li><a href="script.kodi.proxytest-0.0.1.zip">script.kodi.proxytest-0.0.1.zip</a> metadata-only diagnostic package</li>
+</ul>
+</body></html>""")
+
+    def handle_repo_get_or_head(self, send_body=True):
         path = self.path.split("?", 1)[0]
 
         # Kodi add-on repository / browsable source for Kodi File Manager
         if path == "/repo" or path == "/repo/":
-            self.serve_repo_index()
-            return
+            self.serve_repo_index() if send_body else self.serve_html("""<!DOCTYPE html>
+<html><head><title>Kodi Xbox Proxy Repo</title></head>
+<body>
+<h1>Kodi Xbox Proxy Repo</h1>
+<ul>
+  <li><a href="addons.xml">addons.xml</a></li>
+  <li><a href="addons.xml.md5">addons.xml.md5</a></li>
+  <li><a href="script.xbox.proxy/">script.xbox.proxy/</a></li>
+  <li><a href="script.kodi.proxytest/">script.kodi.proxytest/</a> ultra-minimal diagnostic</li>
+</ul>
+</body></html>""", send_body=False)
+            return True
         if path == "/repo/script.xbox.proxy" or path == "/repo/script.xbox.proxy/":
-            self.serve_package_index()
-            return
+            self.serve_package_index() if send_body else self.serve_html("""<!DOCTYPE html>
+<html><head><title>script.xbox.proxy</title></head>
+<body>
+<h1>script.xbox.proxy</h1>
+<ul>
+  <li><a href="script.xbox.proxy-1.0.2.zip">script.xbox.proxy-1.0.2.zip</a> safe diagnostic package</li>
+  <li><a href="script.xbox.proxy-1.0.1.zip">script.xbox.proxy-1.0.1.zip</a> full service package</li>
+</ul>
+</body></html>""", send_body=False)
+            return True
+        if path == "/repo/script.kodi.proxytest" or path == "/repo/script.kodi.proxytest/":
+            self.serve_proxytest_index() if send_body else self.serve_html("""<!DOCTYPE html>
+<html><head><title>script.kodi.proxytest</title></head>
+<body>
+<h1>script.kodi.proxytest</h1>
+<ul>
+  <li><a href="script.kodi.proxytest-0.0.1.zip">script.kodi.proxytest-0.0.1.zip</a> metadata-only diagnostic package</li>
+</ul>
+</body></html>""", send_body=False)
+            return True
         if path == "/repo/addons.xml" or path == "/repo/addons.xml/":
-            self.serve_file("addons.xml", "text/xml")
-            return
+            self.serve_file("addons.xml", "text/xml", send_body=send_body)
+            return True
         if path == "/repo/addons.xml.md5" or path == "/repo/addons.xml.md5/":
             import hashlib
             try:
@@ -596,17 +682,35 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 md5 = hashlib.md5(content).hexdigest()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(md5)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(md5.encode())
+                if send_body:
+                    self.wfile.write(md5.encode())
             except FileNotFoundError:
                 self.send_json(404, {"error": "addons.xml not found"})
-            return
+            return True
         if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.2.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.2.zip/"):
-            self.serve_file("addon-safe.zip", "application/zip", as_attachment=False)
-            return
+            self.serve_file("addon-safe.zip", "application/zip", as_attachment=False, send_body=send_body)
+            return True
+        if path in ("/repo/script.kodi.proxytest/script.kodi.proxytest-0.0.1.zip", "/repo/script.kodi.proxytest/script.kodi.proxytest-0.0.1.zip/"):
+            self.serve_file("proxytest.zip", "application/zip", as_attachment=False, send_body=send_body)
+            return True
         if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.1.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.1.zip/", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip", "/repo/script.xbox.proxy/script.xbox.proxy-1.0.0.zip/"):
-            self.serve_file("addon.zip", "application/zip", as_attachment=False)
+            self.serve_file("addon.zip", "application/zip", as_attachment=False, send_body=send_body)
+            return True
+        return False
+
+    def do_HEAD(self):
+        if self.handle_repo_get_or_head(send_body=False):
             return
+        self.send_error(404)
+
+    def do_GET(self):
+        if self.handle_repo_get_or_head(send_body=True):
+            return
+
+        path = self.path.split("?", 1)[0]
 
         # SSE endpoint for real-time events
         if path == "/api/events":
@@ -615,10 +719,23 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # Web UI
         if path == "/" or path == "/index.html":
+            html = WEB_UI_HTML.encode("utf-8")
+            accept_encoding = self.headers.get("Accept-Encoding", "")
+            if "gzip" in accept_encoding:
+                compressed, was_compressed = gzip_compress(html)
+                if was_compressed:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Encoding", "gzip")
+                    self.send_header("Content-Length", str(len(compressed)))
+                    self.end_headers()
+                    self.wfile.write(compressed)
+                    return
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
             self.end_headers()
-            self.wfile.write(WEB_UI_HTML.encode())
+            self.wfile.write(html)
             return
 
         # API endpoints
@@ -771,7 +888,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             future = asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps(tunnel_msg)), ws_loop
+                ws_send_compressed(ws, tunnel_msg), ws_loop
             )
             future.result(timeout=5)
         except Exception as e:
@@ -817,7 +934,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             future = asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps(msg)), ws_loop
+                ws_send_compressed(ws, msg), ws_loop
             )
             future.result(timeout=5)
         except Exception as e:
@@ -851,16 +968,42 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         return ""
 
     def send_json(self, status, data):
+        raw = json.dumps(data, default=str).encode("utf-8")
+        # Check if client accepts gzip
+        accept_encoding = self.headers.get("Accept-Encoding", "")
+        if "gzip" in accept_encoding:
+            compressed, was_compressed = gzip_compress(raw)
+            if was_compressed:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(compressed)))
+                self.end_headers()
+                self.wfile.write(compressed)
+                return
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(json.dumps(data, default=str).encode("utf-8"))
+        self.wfile.write(raw)
 
 
 # ============================================================
 # WebSocket Server
 # ============================================================
+
+async def ws_send_compressed(websocket, data_dict):
+    """Send a JSON dict through the WebSocket with compression."""
+    raw = json.dumps(data_dict).encode("utf-8")
+    compressed = ws_compress(raw)
+    if compressed[:1] == b"\x01":
+        # Send as binary frame
+        await websocket.send(compressed[1:])
+    else:
+        # Send as text frame
+        await websocket.send(raw.decode("utf-8", errors="replace"))
+
 
 async def addon_handler(websocket):
     global addon_ws, addon_info
@@ -870,8 +1013,13 @@ async def addon_handler(websocket):
     try:
         async for message in websocket:
             try:
+                # Handle binary (compressed) frames
+                if isinstance(message, bytes):
+                    message = ws_decompress(message)
+                    if isinstance(message, bytes):
+                        message = message.decode("utf-8", errors="replace")
                 data = json.loads(message)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
 
             msg_type = data.get("type")

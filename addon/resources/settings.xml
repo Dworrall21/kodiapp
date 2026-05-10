@@ -2,4 +2,6 @@
 <settings>
     <setting id="server_host" type="text" label="Proxy Server IP" default="10.0.0.4"/>
     <setting id="server_port" type="number" label="Proxy Server Port" default="9191"/>
+    <setting id="compression" type="bool" label="Enable Compression" default="true"/>
+    <setting id="compression_level" type="labelenum" label="Compression Level" default="6" values="1|2|3|4|5|6|7|8|9"/>
 </settings>

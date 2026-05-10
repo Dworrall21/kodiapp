@@ -21,6 +21,8 @@ def get_setting_int(key, default):
 SERVER_HOST = ADDON.getSetting("server_host") or "10.0.0.4"
 SERVER_PORT = get_setting_int("server_port", 9191)
 KODI_PORT = 8080
+COMPRESSION_ENABLED = ADDON.getSetting("compression") != "false"
+COMPRESSION_LEVEL = get_setting_int("compression_level", 6)
 
 
 def log(msg, level=None):
@@ -148,6 +150,7 @@ class SimpleWSClient:
         self._on_close = None
         self._on_error = None
         self._running = False
+        self._compression = True  # Enable zlib compression by default
 
     def on_open(self, cb):
         self._on_open = cb
@@ -252,7 +255,9 @@ class SimpleWSClient:
             return None
         if mask_key:
             payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-        if opcode == 0x1:
+        # Decompress if needed
+        payload = self._decompress_payload(payload)
+        if opcode in (0x1, 0x2):
             return payload.decode("utf-8", errors="replace")
         return ""
 
@@ -270,19 +275,49 @@ class SimpleWSClient:
                 return None
         return data
 
+    def _compress_payload(self, data):
+        """Compress data with zlib. Returns bytes with compression flag prefix."""
+        import zlib
+        if not COMPRESSION_ENABLED or not self._compression or len(data) < 64:
+            # Don't bother compressing tiny payloads
+            return b"\x00" + data
+        compressed = zlib.compress(data, COMPRESSION_LEVEL)
+        if len(compressed) < len(data):
+            return b"\x01" + compressed
+        return b"\x00" + data
+
+    def _decompress_payload(self, data):
+        """Decompress data. First byte is compression flag."""
+        if not data:
+            return data
+        flag = data[0:1]
+        payload = data[1:]
+        if flag == b"\x01":
+            import zlib
+            try:
+                return zlib.decompress(payload)
+            except zlib.error:
+                return payload
+        return payload
+
     def send(self, message):
         import struct
         if isinstance(message, str):
             message = message.encode("utf-8")
+        # Compress the payload
+        message = self._compress_payload(message)
         mask_key = os.urandom(4)
         masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(message))
         length = len(masked)
+        # Use binary opcode (0x2) if compressed, text opcode (0x1) if not
+        is_binary = message[:1] == b"\x01"
+        opcode = 0x2 if is_binary else 0x1
         if length < 126:
-            header = bytes([0x81, 0x80 | length])
+            header = bytes([0x80 | opcode, 0x80 | length])
         elif length < 65536:
-            header = bytes([0x81, 0x80 | 126]) + struct.pack("!H", length)
+            header = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack("!H", length)
         else:
-            header = bytes([0x81, 0x80 | 127]) + struct.pack("!Q", length)
+            header = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack("!Q", length)
         self.sock.sendall(header + mask_key + masked)
 
     def close(self):
@@ -577,6 +612,7 @@ def run():
         log("Xbox Web Proxy add-on starting")
         log(f"Proxy server: {SERVER_HOST}:{SERVER_PORT}")
         log(f"Kodi local port: {KODI_PORT}")
+        log(f"Compression: {'enabled (level ' + str(COMPRESSION_LEVEL) + ')' if COMPRESSION_ENABLED else 'disabled'}")
 
         # Give Kodi a few seconds to finish add-on install/startup before
         # creating sockets or event monitors. This avoids stressing Xbox Kodi

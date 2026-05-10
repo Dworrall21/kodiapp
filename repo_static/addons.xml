@@ -26,4 +26,33 @@
         <source>https://github.com/Dworrall21/kodiapp</source>
     </extension>
 </addon>
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.3" provider-name="Dworrall21">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+        <import addon="script.module.six" version="1.16.0"/>
+    </requires>
+    <extension point="xbmc.service" library="default.py" start="startup"/>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Web Interface Proxy for Xbox</summary>
+        <description lang="en_GB">Proxies Kodi's web interface through an outbound WebSocket connection with zlib compression. Bypasses UWP inbound port restrictions on Xbox Retail Mode.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://github.com/Dworrall21/kodiapp</website>
+        <source>https://github.com/Dworrall21/kodiapp</source>
+    </extension>
+</addon>
+<addon id="script.module.six" name="six" version="1.16.0+matrix.1" provider-name="Dworrall21">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+    </requires>
+    <extension point="xbmc.python.module" library="lib"/>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Python 2 and 3 compatibility utilities</summary>
+        <description lang="en_GB">six is a Python 2 and 3 compatibility library. It provides utility functions for smoothing over the differences between the Python versions with the goal of writing Python code that is compatible on both Python 2 and 3.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://pypi.org/project/six/</website>
+        <source>https://pypi.org/project/six/</source>
+    </extension>
+</addon>
 </addons>
