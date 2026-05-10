@@ -1,0 +1,26 @@
+[Unit]
+Description=Kodi Xbox Proxy Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=david
+Group=david
+WorkingDirectory=/home/david/kodi-xbox-proxy
+ExecStart=/usr/bin/python3 -m kodi_xbox_proxy
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kodi-xbox-proxy
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/david/kodi-xbox-proxy
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
