@@ -24,9 +24,8 @@ To easily install and receive automatic updates for the add-ons in this reposito
 4. Select **Install from zip file**.
    * *Note: If this is your first time installing from a third-party source, Kodi will prompt you to enable "Unknown sources" in Settings. Enable it and go back.*
 5. Select the source you added in Step 1 (e.g., `Dworrall21 Repo`).
-6. Open the folder `repository.dworrall21`.
-7. Select `repository.dworrall21-1.0.0.zip` to install.
-8. Wait for the "Add-on installed" notification to appear in the top right corner.
+6. Select `repository.dworrall21-1.0.0.zip` to install.
+7. Wait for the "Add-on installed" notification to appear in the top right corner.
 
 ### Step 3: Install Add-ons from the Repository
 Now that the repository is installed, you can browse and install add-ons from it:
