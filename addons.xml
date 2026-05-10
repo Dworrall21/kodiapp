@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addons>
+<addon id="script.kodi.proxytest" name="Kodi Proxy Install Test" version="0.0.1" provider-name="Dworrall21">
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Kodi proxy install diagnostic</summary>
+        <description lang="en_GB">Ultra-minimal metadata-only diagnostic package. No Python, no settings, no service startup.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://github.com/Dworrall21/kodiapp</website>
+        <source>https://github.com/Dworrall21/kodiapp</source>
+    </extension>
+</addon>
+<addon id="script.kodi.proxyhello" name="Kodi Proxy Hello Test" version="0.0.1" provider-name="Dworrall21">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+    </requires>
+    <extension point="xbmc.python.script" library="default.py">
+        <provides>executable</provides>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Kodi proxy hello diagnostic</summary>
+        <description lang="en_GB">Canonical non-service Python script diagnostic. It should install like a normal Program add-on and only shows a notification when manually run.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://github.com/Dworrall21/kodiapp</website>
+        <source>https://github.com/Dworrall21/kodiapp</source>
+    </extension>
+</addon>
+</addons>
