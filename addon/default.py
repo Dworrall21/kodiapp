@@ -227,46 +227,74 @@ class SimpleWSClient:
                 self._on_close(self)
 
     def _recv_frame(self):
+        """Read a single WebSocket frame. Returns decoded text or None on close/error.
+        Handles ping/pong inline without recursion."""
         import struct
-        header = self._recv_exact(2)
-        if not header:
-            return None
-        fin_op = header[0]
-        opcode = fin_op & 0x0F
-        payload_len = header[1] & 0x7F
-        masked = bool(header[1] & 0x80)
-        if opcode == 0x8:
-            return None
-        if opcode == 0x9:
-            # Send masked pong (RFC 6455: client-to-server frames MUST be masked)
+        while True:
+            header = self._recv_exact(2)
+            if not header:
+                return None
+            fin_op = header[0]
+            opcode = fin_op & 0x0F
+            payload_len = header[1] & 0x7F
+            masked = bool(header[1] & 0x80)
+
+            # Close frame
+            if opcode == 0x8:
+                return None
+
+            # Ping — send pong and continue loop (no recursion)
+            if opcode == 0x9:
+                self._send_pong()
+                continue
+
+            # Read extended payload length
+            if payload_len == 126:
+                ext = self._recv_exact(2)
+                if not ext:
+                    return None
+                payload_len = struct.unpack("!H", ext)[0]
+            elif payload_len == 127:
+                ext = self._recv_exact(8)
+                if not ext:
+                    return None
+                payload_len = struct.unpack("!Q", ext)[0]
+
+            # Read mask key (server-to-client frames are NOT masked per RFC 6455)
+            if masked:
+                mask_key = self._recv_exact(4)
+                if not mask_key:
+                    return None
+            else:
+                mask_key = None
+
+            # Read payload
+            payload = self._recv_exact(payload_len)
+            if payload is None:
+                return None
+            if mask_key:
+                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+
+            # Decompress if needed
+            payload = self._decompress_payload(payload)
+
+            # Return text for text/binary frames, empty string for others
+            if opcode in (0x1, 0x2):
+                return payload.decode("utf-8", errors="replace")
+            return ""
+
+    def _send_pong(self):
+        """Send a masked empty pong frame (RFC 6455: client-to-server frames MUST be masked)."""
+        import os
+        try:
             mask_key = os.urandom(4)
-            pong_payload = b""
-            masked_pong = bytes(b ^ mask_key[i % 4] for i, b in enumerate(pong_payload))
-            pong_frame = bytes([0x8A, 0x80 | len(masked_pong)]) + mask_key + masked_pong
-            self.sock.sendall(pong_frame)
-            return self._recv_frame()
-        if payload_len == 126:
-            ext = self._recv_exact(2)
-            payload_len = struct.unpack("!H", ext)[0]
-        elif payload_len == 127:
-            ext = self._recv_exact(8)
-            payload_len = struct.unpack("!Q", ext)[0]
-        if masked:
-            mask_key = self._recv_exact(4)
-        else:
-            mask_key = None
-        payload = self._recv_exact(payload_len)
-        if payload is None:
-            return None
-        if mask_key:
-            payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-        # Decompress if needed
-        payload = self._decompress_payload(payload)
-        if opcode in (0x1, 0x2):
-            return payload.decode("utf-8", errors="replace")
-        return ""
+            # Pong frame: FIN + opcode 0x8A, masked, length 0
+            self.sock.sendall(bytes([0x8A, 0x80]) + mask_key)
+        except Exception:
+            pass
 
     def _recv_exact(self, n):
+        """Read exactly n bytes from the socket. Returns None on disconnect."""
         data = b""
         while len(data) < n:
             try:
@@ -274,8 +302,6 @@ class SimpleWSClient:
                 if not chunk:
                     return None
                 data += chunk
-            except socket.timeout:
-                continue
             except OSError:
                 return None
         return data

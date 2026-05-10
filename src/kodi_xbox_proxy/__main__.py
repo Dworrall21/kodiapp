@@ -2,6 +2,7 @@
 
 import asyncio
 import http.server
+import socket
 import sys
 import threading
 
@@ -11,6 +12,13 @@ from . import state
 from .config import HTTP_HOST, HTTP_PORT, WS_PORT
 from .websocket_server import addon_handler
 from .http_handler import ProxyHandler
+
+
+def _serve_http(host, port):
+    """Start HTTP server with SO_REUSEADDR to handle quick restarts."""
+    server = http.server.ThreadingHTTPServer((host, port), ProxyHandler)
+    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.serve_forever()
 
 
 def run(host=HTTP_HOST, port=HTTP_PORT, ws_port=WS_PORT):
@@ -26,7 +34,8 @@ def run(host=HTTP_HOST, port=HTTP_PORT, ws_port=WS_PORT):
     print()
 
     http_thread = threading.Thread(
-        target=lambda: http.server.ThreadingHTTPServer((host, port), ProxyHandler).serve_forever(),
+        target=_serve_http,
+        args=(host, port),
         daemon=True,
     )
     http_thread.start()
@@ -35,7 +44,14 @@ def run(host=HTTP_HOST, port=HTTP_PORT, ws_port=WS_PORT):
     async def main():
         state.ws_loop = asyncio.get_running_loop()
         print(f"[proxy] WebSocket server listening on port {ws_port}")
-        async with websockets.serve(addon_handler, "0.0.0.0", ws_port):
+        async with websockets.serve(
+            addon_handler,
+            "0.0.0.0",
+            ws_port,
+            ping_interval=20,
+            ping_timeout=10,
+            close_timeout=5,
+        ):
             await asyncio.Future()
 
     try:

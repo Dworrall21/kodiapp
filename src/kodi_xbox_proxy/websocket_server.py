@@ -62,9 +62,10 @@ async def addon_handler(websocket) -> None:
                 with state.addon_lock:
                     state.addon_info = data.get("info") or {}
                 info = state.addon_info or {}
-                ver = info.get("addon_version") or info.get("version") or "?"
-                build = info.get("build_version") or info.get("kodi_version") or "?"
-                print(f"[proxy] Add-on ready — addon {ver}, Kodi {build}")
+                kodi_ver = info.get("version") or "?"
+                addon_ver = info.get("addon_version") or "1.0.4"
+                platform = info.get("name") or info.get("platform") or "?"
+                print(f"[proxy] Add-on ready — addon v{addon_ver}, Kodi {kodi_ver} ({platform})")
                 state.broadcast_event("addon_ready", info)
 
             elif msg_type == "telemetry":
