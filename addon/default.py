@@ -9,13 +9,27 @@ import xbmcgui
 ADDON = xbmcaddon.Addon()
 ADDON_NAME = ADDON.getAddonInfo("id")
 
+
+def get_setting_int(key, default):
+    try:
+        value = ADDON.getSetting(key)
+        return int(value) if value else default
+    except Exception:
+        return default
+
+
 SERVER_HOST = ADDON.getSetting("server_host") or "10.0.0.4"
-SERVER_PORT = int(ADDON.getSetting("server_port") or "9191")
+SERVER_PORT = get_setting_int("server_port", 9191)
 KODI_PORT = 8080
 
 
-def log(msg):
-    xbmc.log(f"[{ADDON_NAME}] {msg}", xbmc.LOGINFO)
+def log(msg, level=None):
+    if level is None:
+        level = xbmc.LOGINFO
+    try:
+        xbmc.log(f"[{ADDON_NAME}] {msg}", level)
+    except Exception:
+        pass
 
 
 def get_kodi_log_path():
@@ -365,10 +379,10 @@ class ProxyService:
         while self.running:
             try:
                 self.ws = SimpleWSClient(SERVER_HOST, SERVER_PORT)
-                self.ws.on_open = self.on_open
-                self.ws.on_message = self.on_message
-                self.ws.on_close = self.on_close
-                self.ws.on_error = self.on_error
+                self.ws.on_open(self.on_open)
+                self.ws.on_message(self.on_message)
+                self.ws.on_close(self.on_close)
+                self.ws.on_error(self.on_error)
                 self.ws.connect()
             except Exception as e:
                 log(f"Connection error: {e}")
@@ -559,21 +573,31 @@ class ProxyService:
 
 
 def run():
-    log("Xbox Web Proxy add-on starting")
-    log(f"Proxy server: {SERVER_HOST}:{SERVER_PORT}")
-    log(f"Kodi local port: {KODI_PORT}")
+    try:
+        log("Xbox Web Proxy add-on starting")
+        log(f"Proxy server: {SERVER_HOST}:{SERVER_PORT}")
+        log(f"Kodi local port: {KODI_PORT}")
 
-    service = ProxyService()
-    conn_thread = threading.Thread(target=service.connect, daemon=True)
-    conn_thread.start()
+        # Give Kodi a few seconds to finish add-on install/startup before
+        # creating sockets or event monitors. This avoids stressing Xbox Kodi
+        # during the install transaction.
+        startup_monitor = xbmc.Monitor()
+        if startup_monitor.waitForAbort(5):
+            return
 
-    monitor = xbmc.Monitor()
-    while not monitor.abortRequested():
-        if monitor.waitForAbort(30):
-            break
+        service = ProxyService()
+        conn_thread = threading.Thread(target=service.connect, daemon=True)
+        conn_thread.start()
 
-    service.stop()
-    log("Xbox Web Proxy add-on stopped")
+        monitor = xbmc.Monitor()
+        while not monitor.abortRequested():
+            if monitor.waitForAbort(30):
+                break
+
+        service.stop()
+        log("Xbox Web Proxy add-on stopped")
+    except Exception as e:
+        log(f"Fatal service error: {e}", xbmc.LOGERROR)
 
 
 if __name__ == "__main__":
