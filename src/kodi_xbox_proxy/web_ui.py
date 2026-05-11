@@ -196,10 +196,19 @@ let sseConnected = false;
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  event.target.classList.add('active');
+  if (window.event && window.event.target) window.event.target.classList.add('active');
   document.getElementById('panel-' + name).classList.add('active');
+
+  const kodiFrame = document.getElementById('kodiFrame');
+  const frameSrc = kodiFrame.getAttribute('src') || '';
   if (name === 'webui') {
-    document.getElementById('kodiFrame').src = '/_kodi_/';
+    if (!frameSrc || frameSrc === 'about:blank') {
+      kodiFrame.src = '/_kodi_/';
+    }
+  } else if (frameSrc && frameSrc !== 'about:blank') {
+    // Chorus polls /jsonrpc while loaded. Unload it when hidden so background
+    // dashboard tabs do not keep creating Kodi webserver noise.
+    kodiFrame.src = 'about:blank';
   }
 }
 
