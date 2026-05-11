@@ -31,20 +31,7 @@ jobs:
           python3 -m unittest tests/test_iphone_bridge_protocol.py tests/test_iphone_swift_static.py
           python3 -m py_compile addon/default.py addon/iphone_bridge.py
 
-      - name: Build simulator app
-        run: |
-          mkdir -p build
-          set -o pipefail
-          xcodebuild \
-            -project iphone/KodiXboxRemote/KodiXboxRemote.xcodeproj \
-            -scheme KodiXboxRemote \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/DerivedDataSimulator \
-            CODE_SIGNING_ALLOWED=NO \
-            build | tee build/xcodebuild-simulator.log
-
-      - name: Build unsigned device app
+      - name: Build device app (Release / iphoneos)
         run: |
           set -o pipefail
           xcodebuild \
