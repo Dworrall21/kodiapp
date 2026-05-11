@@ -234,6 +234,18 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
+async function refreshLiveSnapshot() {
+  if (!connected) return;
+  try {
+    const d = await api('/live');
+    if (d.now_playing) updateNowPlaying(d.now_playing);
+    if (d.stats) updateStats(d.stats);
+    if (d.volume) updateVolume(d.volume);
+  } catch (e) {
+    // SSE/event updates may still be working; avoid noisy UI errors here.
+  }
+}
+
 async function checkStatus() {
   try {
     const d = await api('/status');
@@ -252,6 +264,7 @@ async function checkStatus() {
         }
       }
       if (!sseConnected) { connectSSE(); }
+      refreshLiveSnapshot();
     } else {
       updateStatus('disconnected', 'Kodi add-on not connected');
       document.getElementById('connStatus').textContent = 'Disconnected';
@@ -310,7 +323,9 @@ function updateNowPlaying(np) {
   document.getElementById('npTitle').textContent = np.title || 'Unknown';
   const dur = np.duration ? formatTime(np.duration) : '—';
   const cur = np.time ? formatTime(np.time) : '—';
-  document.getElementById('npSub').textContent = `${cur} / ${dur} (${np.player_type || 'media'})`;
+  const mediaType = np.player_type || 'media';
+  const detail = np.subtitle ? `${np.subtitle} · ${mediaType}` : mediaType;
+  document.getElementById('npSub').textContent = `${cur} / ${dur} (${detail})`;
   document.getElementById('npProgress').style.display = 'block';
   document.getElementById('npFill').style.width = (np.progress || 0) + '%';
 }
@@ -425,6 +440,7 @@ async function sendCustomCommand() {
 
 checkStatus();
 setInterval(checkStatus, 5000);
+setInterval(refreshLiveSnapshot, 5000);
 </script>
 </body>
 </html>"""

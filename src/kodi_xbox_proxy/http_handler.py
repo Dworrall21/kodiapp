@@ -270,6 +270,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, {"connected": ws is not None, "info": info})
             return
 
+        if path in ("live", "live/"):
+            self.handle_live_snapshot()
+            return
+
         if path.startswith("logs"):
             lines = 200
             raw_query = urlsplit("/api/" + path).query
@@ -305,6 +309,126 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             return
 
         self.send_json(404, {"error": "Unknown API endpoint"})
+
+    def handle_live_snapshot(self):
+        """Return a dashboard-friendly live snapshot via Kodi JSON-RPC.
+
+        This intentionally polls Kodi on demand instead of relying only on the
+        add-on's background telemetry thread. JSON-RPC has proven reliable even
+        on Xbox when some InfoLabels/events are flaky or only update while media
+        is actively playing.
+        """
+        active = self.kodi_jsonrpc("Player.GetActivePlayers")
+        app = self.kodi_jsonrpc("Application.GetProperties", {
+            "properties": ["volume", "muted", "name", "version"]
+        })
+        labels = self.kodi_jsonrpc("XBMC.GetInfoLabels", {
+            "labels": [
+                "System.CPUUsage",
+                "System.Memory(free)",
+                "System.Memory(total)",
+                "System.Uptime",
+                "System.TotalUptime",
+                "System.CPUTemperature",
+                "System.GPUTemperature",
+                "System.Temperature",
+                "System.ScreenResolution",
+            ]
+        })
+
+        players = active.get("result") if isinstance(active, dict) else []
+        players = players if isinstance(players, list) else []
+        now_playing = {"playing": False}
+
+        if players:
+            player = players[0]
+            player_id = player.get("playerid", 1)
+            item = self.kodi_jsonrpc("Player.GetItem", {
+                "playerid": player_id,
+                "properties": [
+                    "title", "showtitle", "album", "artist", "season", "episode",
+                    "duration", "file", "thumbnail",
+                ],
+            })
+            props = self.kodi_jsonrpc("Player.GetProperties", {
+                "playerid": player_id,
+                "properties": ["speed", "time", "totaltime", "percentage"],
+            })
+            item_data = ((item.get("result") or {}).get("item") or {}) if isinstance(item, dict) else {}
+            props_data = (props.get("result") or {}) if isinstance(props, dict) else {}
+            title = item_data.get("title") or item_data.get("label") or item_data.get("file") or "Unknown"
+            subtitle_bits = []
+            if item_data.get("showtitle"):
+                subtitle_bits.append(item_data.get("showtitle"))
+            if item_data.get("season") not in (None, "") and item_data.get("episode") not in (None, ""):
+                subtitle_bits.append(f"S{item_data.get('season')}E{item_data.get('episode')}")
+            now_playing = {
+                "playing": True,
+                "playerid": player_id,
+                "player_type": player.get("type") or item_data.get("type") or "media",
+                "title": title,
+                "subtitle": " · ".join(str(x) for x in subtitle_bits if x),
+                "time": self._time_to_seconds(props_data.get("time")),
+                "duration": self._time_to_seconds(props_data.get("totaltime")) or item_data.get("duration"),
+                "progress": props_data.get("percentage", 0),
+                "speed": props_data.get("speed"),
+            }
+
+        label_result = labels.get("result") if isinstance(labels, dict) else {}
+        app_result = app.get("result") if isinstance(app, dict) else {}
+        stats = {
+            "cpu": self._first_nonempty(label_result, "System.CPUUsage"),
+            "memory_free": self._first_nonempty(label_result, "System.Memory(free)"),
+            "memory_total": self._first_nonempty(label_result, "System.Memory(total)"),
+            "uptime": self._first_nonempty(label_result, "System.Uptime", "System.TotalUptime"),
+            "temperature": self._first_nonempty(
+                label_result,
+                "System.CPUTemperature",
+                "System.GPUTemperature",
+                "System.Temperature",
+            ),
+            "screen_resolution": self._first_nonempty(label_result, "System.ScreenResolution"),
+        }
+        volume = {
+            "volume": app_result.get("volume"),
+            "muted": app_result.get("muted"),
+        }
+
+        self.send_json(200, {
+            "connected": state.addon_ws is not None,
+            "now_playing": now_playing,
+            "stats": stats,
+            "volume": volume,
+        })
+
+    def kodi_jsonrpc(self, method, params=None):
+        response = self.roundtrip_to_addon({
+            "type": "jsonrpc",
+            "method": method,
+            "params": params or {},
+        }, timeout=ADDON_REQUEST_TIMEOUT)
+        if response is None:
+            return {}
+        return response.get("body", {}) or {}
+
+    @staticmethod
+    def _time_to_seconds(value):
+        if not isinstance(value, dict):
+            return value or 0
+        return (
+            int(value.get("hours") or 0) * 3600
+            + int(value.get("minutes") or 0) * 60
+            + int(value.get("seconds") or 0)
+            + float(value.get("milliseconds") or 0) / 1000.0
+        )
+
+    @staticmethod
+    def _first_nonempty(mapping, *keys):
+        for key in keys:
+            val = (mapping or {}).get(key)
+            if val not in (None, ""):
+                return val
+        return ""
 
     # --- Proxy to Kodi ---
 
