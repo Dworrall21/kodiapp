@@ -64,7 +64,7 @@ struct RemoteView: View {
                         .font(.subheadline)
                     if let telemetry = viewModel.telemetry {
                         HStack {
-                            Text("Volume: \(telemetry.volume.map(String.init) ?? "\u2014")")
+                            Text("Volume: \(telemetry.volume.map(String.init) ?? "\u{2014}")")
                             Spacer()
                             Text("Muted: \(telemetry.muted == true ? "Yes" : "No")")
                         }
@@ -85,7 +85,7 @@ struct RemoteView: View {
                 .background(.thinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                RemoteControlPad()
+                RemoteControlPad(showKeyboard: $showKeyboard)
                     .disabled(!viewModel.canSendCommands)
                     .opacity(viewModel.canSendCommands ? 1.0 : 0.45)
             }
@@ -107,6 +107,7 @@ struct RemoteView: View {
 
 private struct RemoteControlPad: View {
     @EnvironmentObject var viewModel: RemoteViewModel
+    @Binding var showKeyboard: Bool
 
     var body: some View {
         VStack(spacing: 14) {
