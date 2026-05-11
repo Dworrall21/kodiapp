@@ -26,7 +26,7 @@
         <source>https://github.com/Dworrall21/kodiapp</source>
     </extension>
 </addon>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.8" provider-name="Dworrall21">
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.9" provider-name="Dworrall21">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
