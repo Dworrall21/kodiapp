@@ -43,11 +43,19 @@ def build_zip(addon_id: str, version: str) -> Path:
     zip_path = OUT_DIR / f"{addon_id}-{version}.zip"
     if zip_path.exists():
         zip_path.unlink()
+    allowed_roots = {"addon.xml", "default.py", "resources"}
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(SOURCE_DIR.rglob("*")):
+            rel = path.relative_to(SOURCE_DIR)
+            parts = rel.parts
+            if not parts or parts[0] not in allowed_roots:
+                continue
+            if "__pycache__" in parts:
+                continue
+            if path.suffix in {".pyc", ".pyo"}:
+                continue
             if path.is_dir():
                 continue
-            rel = path.relative_to(SOURCE_DIR)
             zf.write(path, f"{addon_id}/{rel.as_posix()}")
     return zip_path
 

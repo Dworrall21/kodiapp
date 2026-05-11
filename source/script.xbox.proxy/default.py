@@ -386,9 +386,7 @@ def service_loop():
     while not monitor.abortRequested():
         cfg = config()
         if not cfg["auth_token"]:
-            log("No auth token configured. Refusing to connect to bridge.", xbmc.LOGERROR)
-            monitor.waitForAbort(30)
-            continue
+            log("No auth token configured. Connecting without bridge authentication.", xbmc.LOGWARNING)
         ws = None
         try:
             ws = SimpleWebSocket(cfg)

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
     <category label="Bridge">
-        <setting id="bridge_host" type="text" label="Bridge Host" default="127.0.0.1"/>
-        <setting id="bridge_port" type="number" label="Bridge Port" default="8765"/>
+        <setting id="bridge_host" type="text" label="Bridge Host" default="10.0.0.4"/>
+        <setting id="bridge_port" type="number" label="Bridge Port" default="9191"/>
         <setting id="bridge_path" type="text" label="Bridge Path" default="/"/>
         <setting id="auth_token" type="text" label="Shared Auth Token" default=""/>
         <setting id="use_tls" type="bool" label="Use TLS" default="false"/>
