@@ -46,6 +46,10 @@ class IPhoneSwiftStaticTests(unittest.TestCase):
         self.assertNotIn("authRequest", text)
         self.assertIn("sendCommand", text)
 
+    def test_keyboard_text_send_does_not_submit_or_go(self):
+        text = self.read("ViewModels/RemoteViewModel.swift")
+        self.assertIn('sendCommand("Input.SendText", params: ["text": trimmed, "done": false])', text)
+
     def test_remote_view_uses_bool_alert_and_does_not_reach_private_server_state(self):
         text = self.read("Views/RemoteView.swift")
         self.assertIn("alert(\"Error\"", text)

@@ -86,7 +86,7 @@ final class RemoteViewModel: ObservableObject {
     func sendText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        sendCommand("Input.SendText", params: ["text": trimmed])
+        sendCommand("Input.SendText", params: ["text": trimmed, "done": false])
     }
 
     func clearDebugLog() {

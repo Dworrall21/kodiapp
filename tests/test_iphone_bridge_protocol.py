@@ -5,6 +5,7 @@ from addon.iphone_bridge import (
     decode_json_line,
     encode_json_line,
     extract_json_lines,
+    is_timeout_error,
     make_auth_message,
     make_error_message,
     make_hello_message,
@@ -81,6 +82,13 @@ class IPhoneBridgeProtocolTests(unittest.TestCase):
             "message": "Nope",
             "code": "bad_command",
         })
+
+    def test_is_timeout_error_matches_socket_timeout_and_plain_timed_out_oserror(self):
+        import socket
+        self.assertTrue(is_timeout_error(socket.timeout("timed out")))
+        self.assertTrue(is_timeout_error(TimeoutError("timed out")))
+        self.assertTrue(is_timeout_error(OSError("timed out")))
+        self.assertFalse(is_timeout_error(OSError("connection reset")))
 
 
 if __name__ == "__main__":

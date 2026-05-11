@@ -7,6 +7,7 @@ free of Kodi/xbmc imports so it can be unit-tested outside Kodi.
 from __future__ import unicode_literals
 
 import json
+import socket
 
 PROTOCOL = "iphone-bridge-v1"
 MAX_LINE_BYTES = 256 * 1024
@@ -58,6 +59,14 @@ def extract_json_lines(buffer):
     if len(buffer) > MAX_LINE_BYTES:
         raise BridgeProtocolError("Bridge message too large")
     return messages, buffer
+
+
+def is_timeout_error(exc):
+    if isinstance(exc, socket.timeout):
+        return True
+    if isinstance(exc, TimeoutError):
+        return True
+    return "timed out" in str(exc).lower()
 
 
 def make_hello_message(addon_id, addon_version, kodi_name, kodi_version, platform):

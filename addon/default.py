@@ -41,6 +41,7 @@ try:
         BridgeProtocolError,
         encode_json_line,
         extract_json_lines,
+        is_timeout_error,
         make_auth_message,
         make_error_message,
         make_hello_message,
@@ -51,6 +52,7 @@ except Exception:
         BridgeProtocolError,
         encode_json_line,
         extract_json_lines,
+        is_timeout_error,
         make_auth_message,
         make_error_message,
         make_hello_message,
@@ -623,8 +625,10 @@ class IPhoneBridgeClient(object):
                 messages, self.buffer = extract_json_lines(self.buffer)
                 for message in messages:
                     self.handle_message(message)
-            except socket.timeout:
-                continue
+            except Exception as exc:
+                if is_timeout_error(exc):
+                    continue
+                raise
 
 
 def iphone_bridge_loop(monitor, cfg):
@@ -697,8 +701,10 @@ def service_loop():
                     next_telemetry = time.time() + cfg["telemetry_interval_seconds"]
                 try:
                     dispatch(ws, ws.recv(), cfg)
-                except socket.timeout:
-                    continue
+                except Exception as exc:
+                    if is_timeout_error(exc):
+                        continue
+                    raise
         except Exception as exc:
             log("Bridge loop error: %s\n%s" % (exc, traceback.format_exc()), xbmc.LOGERROR)
         finally:
