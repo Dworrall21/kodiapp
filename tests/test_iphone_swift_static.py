@@ -25,7 +25,7 @@ class IPhoneSwiftStaticTests(unittest.TestCase):
         self.assertIn("send(command: CommandMessage)", text)
         self.assertIn("Data([0x0A])", text)
         self.assertIn("BridgeMessage.decode", text)
-        self.assertIn("Task { @MainActor in self.receiveNext() }", text)
+        self.assertIn("self.beginReceiveNext()", text)
         self.assertNotIn("init(host: String", text)
         self.assertNotIn("decode(BridgeMessage.self", text)
 
