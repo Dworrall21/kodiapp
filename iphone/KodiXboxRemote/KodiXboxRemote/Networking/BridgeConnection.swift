@@ -9,7 +9,7 @@ final class BridgeConnection: ObservableObject {
     let endpointDescription: String
 
     private let connection: NWConnection
-    private let queue = DispatchQueue(label: "KodiXboxRemote.BridgeConnection")
+    private let queue = DispatchQueue(label: "KodiXboxRemote.BridgeConnection", qos: .userInitiated)
     private var buffer = Data()
     private let newline = Data([0x0A])
 
@@ -24,10 +24,32 @@ final class BridgeConnection: ObservableObject {
 
     func start() {
         connection.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in self?.handleState(state) }
+            switch state {
+            case .ready:
+                Task { @MainActor in
+                    self?.isConnected = true
+                    self?.lastError = nil
+                    self?.onConnectionStateChanged?(true)
+                }
+            case .failed(let error):
+                Task { @MainActor in
+                    self?.isConnected = false
+                    self?.reportError("Connection failed: \(error.localizedDescription)")
+                    self?.onConnectionStateChanged?(false)
+                }
+            case .cancelled:
+                Task { @MainActor in
+                    self?.isConnected = false
+                    self?.onConnectionStateChanged?(false)
+                }
+            case .waiting, .preparing, .setup:
+                break
+            @unknown default:
+                break
+            }
         }
         connection.start(queue: queue)
-        receiveNext()
+        beginReceiveNext()
     }
 
     func disconnect() {
@@ -54,6 +76,8 @@ final class BridgeConnection: ObservableObject {
         sendJSON(object)
     }
 
+    // MARK: - Send
+
     private func sendJSON(_ object: [String: Any]) {
         do {
             let data = try JSONObject.encodeLine(object)
@@ -67,16 +91,19 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    private func receiveNext() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: bridgeMaxMessageBytes) { [weak self] data, _, isComplete, error in
+    // MARK: - Receive (recursive queue loop)
+
+    /// Schedule the next receive callback on our dedicated queue.
+    /// This is NOT MainActor-bound — it runs immediately, so no data is lost between messages.
+    private func beginReceiveNext() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: bridgeMaxMessageBytes) { [weak self] data, context, isComplete, error in
             guard let self else { return }
+
             if let error {
                 Task { @MainActor in self.reportError("Receive failed: \(error.localizedDescription)") }
                 return
             }
-            if let data, !data.isEmpty {
-                Task { @MainActor in self.consume(data) }
-            }
+
             if isComplete {
                 Task { @MainActor in
                     self.isConnected = false
@@ -84,9 +111,18 @@ final class BridgeConnection: ObservableObject {
                 }
                 return
             }
-            Task { @MainActor in self.receiveNext() }
+
+            if let data, !data.isEmpty {
+                self.consume(data)
+            }
+
+            // IMMEDIATELY schedule the next receive — must be the LAST thing we do
+            // so no data is delivered between receiving and rescheduling.
+            self.beginReceiveNext()
         }
     }
+
+    // MARK: - Message parsing
 
     private func consume(_ data: Data) {
         buffer.append(data)
@@ -107,23 +143,7 @@ final class BridgeConnection: ObservableObject {
         }
     }
 
-    private func handleState(_ state: NWConnection.State) {
-        switch state {
-        case .ready:
-            isConnected = true
-            lastError = nil
-            onConnectionStateChanged?(true)
-        case .failed(let error):
-            isConnected = false
-            reportError("Connection failed: \(error.localizedDescription)")
-            onConnectionStateChanged?(false)
-        case .cancelled:
-            isConnected = false
-            onConnectionStateChanged?(false)
-        default:
-            break
-        }
-    }
+    // MARK: - Error reporting
 
     private func reportError(_ message: String) {
         lastError = message

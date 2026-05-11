@@ -28,6 +28,7 @@ final class BridgeServer: ObservableObject {
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
+            parameters.requiredInterfaceType = .wifi
             let endpointPort = NWEndpoint.Port(rawValue: port) ?? 9192
             let listener = try NWListener(using: parameters, on: endpointPort)
             listener.stateUpdateHandler = { [weak self] state in
