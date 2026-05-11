@@ -1,7 +1,6 @@
 import Foundation
 import Network
 
-@MainActor
 final class BridgeConnection: ObservableObject {
     @Published private(set) var isConnected = false
     @Published private(set) var lastError: String?
@@ -16,6 +15,7 @@ final class BridgeConnection: ObservableObject {
     var onMessageReceived: ((BridgeMessage) -> Void)?
     var onConnectionStateChanged: ((Bool) -> Void)?
     var onError: ((String) -> Void)?
+    var onDebugLog: ((String) -> Void)?
 
     init(connection: NWConnection) {
         self.connection = connection
@@ -29,6 +29,7 @@ final class BridgeConnection: ObservableObject {
                 Task { @MainActor in
                     self?.isConnected = true
                     self?.lastError = nil
+                    self?.logDebug("Connection ready")
                     self?.onConnectionStateChanged?(true)
                 }
             case .failed(let error):
@@ -53,9 +54,12 @@ final class BridgeConnection: ObservableObject {
     }
 
     func disconnect() {
+        logDebug("Disconnecting")
         connection.cancel()
-        isConnected = false
-        onConnectionStateChanged?(false)
+        DispatchQueue.main.async { [weak self] in
+            self?.isConnected = false
+            self?.onConnectionStateChanged?(false)
+        }
     }
 
     func send(command: CommandMessage) {
@@ -81,6 +85,7 @@ final class BridgeConnection: ObservableObject {
     private func sendJSON(_ object: [String: Any]) {
         do {
             let data = try JSONObject.encodeLine(object)
+            logDebug("Sending JSON line (\(data.count) bytes)")
             connection.send(content: data, completion: .contentProcessed { [weak self] error in
                 if let error {
                     Task { @MainActor in self?.reportError("Send failed: \(error.localizedDescription)") }
@@ -113,6 +118,7 @@ final class BridgeConnection: ObservableObject {
             }
 
             if let data, !data.isEmpty {
+                self.logDebug("Received \(data.count) bytes")
                 self.consume(data)
             }
 
@@ -132,7 +138,8 @@ final class BridgeConnection: ObservableObject {
             guard !line.isEmpty else { continue }
             do {
                 let message = try BridgeMessage.decode(line)
-                onMessageReceived?(message)
+                logDebug("Decoded \(message.debugName)")
+                DispatchQueue.main.async { [weak self] in self?.onMessageReceived?(message) }
             } catch {
                 reportError("Decode failed: \(error.localizedDescription)")
             }
@@ -146,7 +153,16 @@ final class BridgeConnection: ObservableObject {
     // MARK: - Error reporting
 
     private func reportError(_ message: String) {
-        lastError = message
-        onError?(message)
+        DispatchQueue.main.async { [weak self] in
+            self?.lastError = message
+            self?.logDebug("Error: \(message)")
+            self?.onError?(message)
+        }
+    }
+
+    private func logDebug(_ message: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onDebugLog?(message)
+        }
     }
 }

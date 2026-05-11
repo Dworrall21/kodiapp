@@ -16,6 +16,7 @@ final class BridgeServer: ObservableObject {
     var onConnectionEstablished: ((BridgeConnection) -> Void)?
     var onConnectionLost: (() -> Void)?
     var onError: ((String) -> Void)?
+    var onDebugLog: ((String) -> Void)?
 
     init(port: UInt16 = 9192) {
         self.port = port
@@ -39,6 +40,7 @@ final class BridgeServer: ObservableObject {
             }
             self.listener = listener
             localAddress = Self.firstWiFiIPv4Address() ?? "0.0.0.0"
+            logDebug("Starting listener on \(localAddress):\(port)")
             listener.start(queue: queue)
         } catch {
             reportError("Failed to start listener: \(error.localizedDescription)")
@@ -47,6 +49,7 @@ final class BridgeServer: ObservableObject {
     }
 
     func stopListening() {
+        logDebug("Stopping listener")
         listener?.cancel()
         listener = nil
         currentConnection?.disconnect()
@@ -60,6 +63,7 @@ final class BridgeServer: ObservableObject {
         case .ready:
             isListening = true
             lastError = nil
+            logDebug("Listener ready on port \(port)")
         case .failed(let error):
             reportError("Listener failed: \(error.localizedDescription)")
             stopListening()
@@ -71,11 +75,12 @@ final class BridgeServer: ObservableObject {
     }
 
     private func handleNewConnection(_ nwConnection: NWConnection) {
+        logDebug("Accepted connection from \(nwConnection.endpoint)")
         currentConnection?.disconnect()
         let connection = BridgeConnection(connection: nwConnection)
-        connection.onConnectionStateChanged = { [weak self] connected in
-            guard let self else { return }
-            if !connected {
+        connection.onConnectionStateChanged = { [weak self, weak connection] connected in
+            guard let self, let connection else { return }
+            if !connected && self.currentConnection === connection {
                 self.currentConnection = nil
                 self.onConnectionLost?()
             }
@@ -88,7 +93,12 @@ final class BridgeServer: ObservableObject {
 
     private func reportError(_ message: String) {
         lastError = message
+        logDebug("Error: \(message)")
         onError?(message)
+    }
+
+    private func logDebug(_ message: String) {
+        onDebugLog?(message)
     }
 
     static func firstWiFiIPv4Address() -> String? {

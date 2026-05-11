@@ -14,6 +14,8 @@ final class RemoteViewModel: ObservableObject {
     @Published var lastResult: String = ""
     @Published var lastError: String?
     @Published var showError = false
+    @Published var debugEntries: [DebugLogEntry] = []
+    @Published var debugLoggingEnabled = true
 
     private let bridgeServer = BridgeServer(port: 9192)
     private var activeConnection: BridgeConnection?
@@ -77,7 +79,26 @@ final class RemoteViewModel: ObservableObject {
             return
         }
         let command = CommandMessage(id: nextCommandID(), method: method, params: params)
+        logDebug("Sending \(method)")
         connection.send(command: command)
+    }
+
+    func sendText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        sendCommand("Input.SendText", params: ["text": trimmed])
+    }
+
+    func clearDebugLog() {
+        debugEntries.removeAll()
+    }
+
+    func logDebug(_ message: String) {
+        guard debugLoggingEnabled else { return }
+        debugEntries.insert(DebugLogEntry(message: message), at: 0)
+        if debugEntries.count > 200 {
+            debugEntries.removeLast(debugEntries.count - 200)
+        }
     }
 
     private func bindServer() {
@@ -106,6 +127,10 @@ final class RemoteViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        bridgeServer.onDebugLog = { [weak self] message in
+            self?.logDebug(message)
+        }
+
         bridgeServer.onConnectionEstablished = { [weak self] connection in
             self?.attach(connection)
         }
@@ -121,17 +146,24 @@ final class RemoteViewModel: ObservableObject {
         activeConnection = connection
         connectionStatus = .waitingForHello
         addonSummary = "Xbox add-on connected; waiting for hello"
+        logDebug("Attached Xbox add-on connection from \(connection.endpointDescription)")
 
+        connection.onDebugLog = { [weak self] message in
+            self?.logDebug(message)
+        }
         connection.onMessageReceived = { [weak self, weak connection] message in
-            guard let self, let connection else { return }
+            guard let self, let connection, self.activeConnection === connection else { return }
             self.handle(message, from: connection)
         }
         connection.onError = { [weak self] error in self?.setError(error) }
-        connection.onConnectionStateChanged = { [weak self] connected in
-            if !connected {
-                self?.activeConnection = nil
-                self?.telemetry = nil
-                self?.connectionStatus = self?.isListening == true ? .listening : .disconnected
+        let previousStateHandler = connection.onConnectionStateChanged
+        connection.onConnectionStateChanged = { [weak self, weak connection] connected in
+            previousStateHandler?(connected)
+            guard let self, let connection else { return }
+            if !connected && self.activeConnection === connection {
+                self.activeConnection = nil
+                self.telemetry = nil
+                self.connectionStatus = self.isListening ? .listening : .disconnected
             }
         }
     }
@@ -139,6 +171,7 @@ final class RemoteViewModel: ObservableObject {
     private func handle(_ message: BridgeMessage, from connection: BridgeConnection) {
         switch message {
         case .hello(let hello):
+            logDebug("Received hello from \(hello.addonID) \(hello.addonVersion)")
             addonSummary = "\(hello.kodiName) \(hello.kodiVersion) via \(hello.addonID) \(hello.addonVersion)"
             if pairingToken.isEmpty {
                 connection.sendAuthOK()
@@ -158,13 +191,16 @@ final class RemoteViewModel: ObservableObject {
         case .result(let result):
             if result.ok {
                 lastResult = "Command \(result.id ?? "?") OK"
+                logDebug(lastResult)
             } else {
                 lastResult = "Command \(result.id ?? "?") failed: \(result.error ?? "Unknown error")"
+                logDebug(lastResult)
             }
         case .error(let error):
             setError(error.message)
         case .telemetry(let telemetry):
             self.telemetry = telemetry
+            logDebug("Telemetry received: volume \(telemetry.volume.map(String.init) ?? "?")")
             if connectionStatus == .authenticated { connectionStatus = .connected }
         case .ping(let id):
             connection.sendPong(id: id)
@@ -186,9 +222,26 @@ final class RemoteViewModel: ObservableObject {
     }
 
     private func setError(_ message: String) {
+        logDebug("Error: \(message)")
         lastError = message
         showError = true
     }
+}
+
+struct DebugLogEntry: Identifiable {
+    let id = UUID()
+    let timestamp = Date()
+    let message: String
+
+    var displayTime: String {
+        Self.formatter.string(from: timestamp)
+    }
+
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 }
 
 enum ConnectionStatus: String, CaseIterable {

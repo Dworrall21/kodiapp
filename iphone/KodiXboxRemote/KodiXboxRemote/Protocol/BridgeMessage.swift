@@ -128,6 +128,22 @@ enum BridgeMessage {
             return .unknown(type, object)
         }
     }
+
+    var debugName: String {
+        switch self {
+        case .hello: return "hello"
+        case .auth: return "auth"
+        case .authOK: return "auth_ok"
+        case .authError: return "auth_error"
+        case .command: return "command"
+        case .result: return "result"
+        case .error: return "error"
+        case .telemetry: return "telemetry"
+        case .ping: return "ping"
+        case .pong: return "pong"
+        case .unknown(let type, _): return "unknown(\(type))"
+        }
+    }
 }
 
 enum BridgeMessageError: Error, LocalizedError {
