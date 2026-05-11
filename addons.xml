@@ -29,7 +29,7 @@
 <addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.5" provider-name="Dworrall21">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
-        <import addon="script.module.six" version="1.16.0"/>
+        <import addon="script.module.six" version="1.16.0+matrix.1"/>
     </requires>
     <extension point="xbmc.service" library="default.py" start="startup"/>
     <extension point="xbmc.addon.metadata">

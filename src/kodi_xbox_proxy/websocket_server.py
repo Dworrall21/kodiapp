@@ -75,6 +75,7 @@ async def addon_handler(websocket) -> None:
 
             elif msg_type == "event":
                 event_type = data.get("event") or data.get("event_type") or "unknown"
+                print(f"[proxy] Add-on event: {event_type}")
                 state.broadcast_event(event_type, data.get("data", {}))
 
             elif msg_type == "logs_result":
