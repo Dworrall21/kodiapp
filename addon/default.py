@@ -1,673 +1,448 @@
+# -*- coding: utf-8 -*-
+"""Robust Xbox Web Proxy service for Kodi.
+
+Protocol v2:
+- Client opens an outbound WebSocket to the bridge.
+- Text frames are plain JSON.
+- Binary frames use a one-byte envelope: 0x00 raw JSON bytes, 0x01 zlib JSON bytes.
+- HTTP bodies are returned as utf-8 text or base64 binary using body_encoding.
+"""
+from __future__ import unicode_literals
+
+import base64
+import collections
+import hashlib
 import json
 import os
-import threading
+import random
+import socket
+import ssl
+import struct
+import sys
 import time
+import traceback
+import urllib.request
+import zlib
+
 import xbmc
 import xbmcaddon
-import xbmcgui
+import xbmcvfs
 
 ADDON = xbmcaddon.Addon()
-ADDON_NAME = ADDON.getAddonInfo("id")
+ADDON_ID = ADDON.getAddonInfo("id")
+ADDON_VERSION = ADDON.getAddonInfo("version")
+ADDON_NAME = ADDON.getAddonInfo("name") or ADDON_ID
+GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+PROTOCOL_VERSION = 2
+MAX_FRAME_BYTES = 4 * 1024 * 1024
+MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024
+MAX_LOG_LINES = 1000
+TEXT_TYPES = ("text/", "application/json", "application/javascript", "application/xml", "application/xhtml+xml", "image/svg+xml")
+ALLOWED_METHODS = {"GET", "POST", "HEAD", "OPTIONS"}
+HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
 
 
-def get_setting_int(key, default):
+def log(msg, level=xbmc.LOGINFO):
     try:
-        value = ADDON.getSetting(key)
-        return int(value) if value else default
-    except Exception:
-        return default
-
-
-SERVER_HOST = ADDON.getSetting("server_host") or "10.0.0.4"
-SERVER_PORT = get_setting_int("server_port", 9191)
-KODI_PORT = 8080
-COMPRESSION_ENABLED = ADDON.getSetting("compression") != "false"
-COMPRESSION_LEVEL = get_setting_int("compression_level", 6)
-
-
-def log(msg, level=None):
-    if level is None:
-        level = xbmc.LOGINFO
-    try:
-        xbmc.log(f"[{ADDON_NAME}] {msg}", level)
+        xbmc.log("[%s] %s" % (ADDON_ID, msg), level)
     except Exception:
         pass
 
 
-def get_kodi_log_path():
-    """Find Kodi's log file path."""
-    candidates = [
-        os.path.join(xbmc.translatepath("special://logpath"), "kodi.log"),
-        os.path.join(xbmc.translatepath("special://home"), "temp", "kodi.log"),
-        os.path.join(xbmc.translatepath("special://temp"), "kodi.log"),
-    ]
-    for path in candidates:
-        if path and os.path.isfile(path):
-            return path
-    home = xbmc.translatepath("special://home")
-    if os.path.isdir(home):
-        for root, dirs, files in os.walk(home):
-            if "kodi.log" in files:
-                return os.path.join(root, "kodi.log")
-    return None
-
-
-def read_kodi_logs(lines=200):
-    """Read the last N lines of kodi.log."""
-    log_path = get_kodi_log_path()
-    if not log_path:
-        return {"error": "Could not find kodi.log", "path": None}
+def setting(name, default=""):
     try:
-        with open(log_path, "r", errors="replace") as f:
-            all_lines = f.readlines()
-            last_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            return {
-                "path": log_path,
-                "total_lines": len(all_lines),
-                "lines": "".join(last_lines),
-            }
-    except Exception as e:
-        return {"error": str(e), "path": log_path}
+        value = ADDON.getSetting(name)
+        return value if value not in (None, "") else default
+    except Exception:
+        return default
 
 
-def get_kodi_info():
-    """Get Kodi version and system info."""
+def int_setting(name, default, lo=None, hi=None):
     try:
-        return {
-            "version": xbmc.getInfoLabel("System.BuildVersion"),
-            "name": xbmc.getInfoLabel("System.FriendlyName"),
-            "platform": xbmc.getInfoLabel("System.OSVersionInfo"),
-        }
-    except:
-        return {"version": "unknown"}
+        value = int(setting(name, str(default)))
+    except Exception:
+        value = default
+    if lo is not None:
+        value = max(lo, value)
+    if hi is not None:
+        value = min(hi, value)
+    return value
 
 
-def get_now_playing():
-    """Get currently playing media info."""
-    try:
-        player = xbmc.Player()
-        if not player.isPlaying():
-            return {"playing": False}
-
-        info = {"playing": True}
-        try:
-            info["title"] = player.getVideoInfoTag().getTitle() or player.getMusicInfoTag().getTitle()
-        except:
-            pass
-        try:
-            info["duration"] = player.getTotalTime()
-            info["time"] = player.getTime()
-            info["progress"] = (player.getTime() / player.getTotalTime() * 100) if player.getTotalTime() > 0 else 0
-        except:
-            pass
-        try:
-            info["player_type"] = "video" if player.isPlayingVideo() else "audio"
-        except:
-            pass
-        return info
-    except:
-        return {"playing": False}
+def bool_setting(name, default=False):
+    value = setting(name, "true" if default else "false").lower().strip()
+    return value in ("1", "true", "yes", "on")
 
 
-def get_system_stats():
-    """Get system resource usage."""
-    try:
-        return {
-            "cpu": xbmc.getInfoLabel("System.CPUUsage"),
-            "memory_free": xbmc.getInfoLabel("System.Memory(free)"),
-            "memory_total": xbmc.getInfoLabel("System.Memory(total)"),
-            "uptime": xbmc.getInfoLabel("System.TotalUptime"),
-            "temperature": xbmc.getInfoLabel("System.Temperature"),
-        }
-    except:
-        return {}
+def config():
+    return {
+        "bridge_host": setting("bridge_host", "127.0.0.1"),
+        "bridge_port": int_setting("bridge_port", 8765, 1, 65535),
+        "bridge_path": setting("bridge_path", "/"),
+        "use_tls": bool_setting("use_tls", False),
+        "verify_tls": bool_setting("verify_tls", True),
+        "auth_token": setting("auth_token", ""),
+        "kodi_host": setting("kodi_host", "127.0.0.1"),
+        "kodi_port": int_setting("kodi_port", 8080, 1, 65535),
+        "reconnect_min_seconds": int_setting("reconnect_min_seconds", 5, 1, 300),
+        "reconnect_max_seconds": int_setting("reconnect_max_seconds", 60, 1, 600),
+        "telemetry_interval_seconds": int_setting("telemetry_interval_seconds", 30, 5, 3600),
+        "enable_http_proxy": bool_setting("enable_http_proxy", True),
+        "enable_management_rpc": bool_setting("enable_management_rpc", True),
+        "enable_log_tail": bool_setting("enable_log_tail", True),
+    }
 
 
-def get_volume_info():
-    """Get current volume state."""
-    try:
-        return {
-            "volume": xbmc.getInfoLabel("Player.Volume"),
-            "muted": xbmc.getInfoLabel("Player.Muted") == "true",
-        }
-    except:
-        return {}
+class ProtocolError(Exception):
+    pass
 
 
-# ============================================================
-# Minimal WebSocket client (pure stdlib)
-# ============================================================
-
-class SimpleWSClient:
-    def __init__(self, host, port, path="/"):
-        self.host = host
-        self.port = port
-        self.path = path
+class SimpleWebSocket(object):
+    def __init__(self, cfg):
+        self.cfg = cfg
         self.sock = None
         self.connected = False
-        self._on_open = None
-        self._on_message = None
-        self._on_close = None
-        self._on_error = None
-        self._running = False
-        self._compression = True  # Enable zlib compression by default
 
-    def on_open(self, cb):
-        self._on_open = cb
+    def connect(self, timeout=15):
+        raw = socket.create_connection((self.cfg["bridge_host"], self.cfg["bridge_port"]), timeout=timeout)
+        raw.settimeout(timeout)
+        if self.cfg["use_tls"]:
+            ctx = ssl.create_default_context() if self.cfg["verify_tls"] else ssl._create_unverified_context()
+            raw = ctx.wrap_socket(raw, server_hostname=self.cfg["bridge_host"])
+        self.sock = raw
+        path = self.cfg["bridge_path"] or "/"
+        if not path.startswith("/"):
+            path = "/" + path
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        headers = [
+            "GET %s HTTP/1.1" % path,
+            "Host: %s:%s" % (self.cfg["bridge_host"], self.cfg["bridge_port"]),
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Key: %s" % key,
+            "Sec-WebSocket-Version: 13",
+            "X-Kodi-Proxy-Protocol: %s" % PROTOCOL_VERSION,
+            "X-Kodi-Proxy-Addon: %s/%s" % (ADDON_ID, ADDON_VERSION),
+        ]
+        if self.cfg["auth_token"]:
+            headers.append("Authorization: Bearer %s" % self.cfg["auth_token"])
+        self.sock.sendall(("\r\n".join(headers) + "\r\n\r\n").encode("ascii"))
+        response = self._read_handshake()
+        status_line = response.split("\r\n", 1)[0]
+        if " 101 " not in status_line:
+            raise ProtocolError("WebSocket upgrade failed: %s" % status_line)
+        expected = base64.b64encode(hashlib.sha1((key + GUID).encode("ascii")).digest()).decode("ascii")
+        if expected.lower() not in response.lower():
+            raise ProtocolError("WebSocket accept key mismatch")
+        self.sock.settimeout(1.0)
+        self.connected = True
 
-    def on_message(self, cb):
-        self._on_message = cb
-
-    def on_close(self, cb):
-        self._on_close = cb
-
-    def on_error(self, cb):
-        self._on_error = cb
-
-    def connect(self):
-        import socket
-        import base64
-
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(10)
-            self.sock.connect((self.host, self.port))
-
-            key = base64.b64encode(os.urandom(16)).decode()
-            handshake = (
-                f"GET {self.path} HTTP/1.1\r\n"
-                f"Host: {self.host}:{self.port}\r\n"
-                f"Upgrade: websocket\r\n"
-                f"Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Key: {key}\r\n"
-                f"Sec-WebSocket-Version: 13\r\n"
-                f"\r\n"
-            )
-            self.sock.sendall(handshake.encode())
-
-            response = b""
-            while b"\r\n\r\n" not in response:
-                chunk = self.sock.recv(4096)
-                if not chunk:
-                    raise ConnectionError("Connection closed during handshake")
-                response += chunk
-
-            if b"101" not in response.split(b"\r\n")[0]:
-                raise ConnectionError(f"Handshake failed: {response[:200]}")
-
-            self.connected = True
-            self._running = True
-            self.sock.settimeout(None)
-
-            if self._on_open:
-                self._on_open(self)
-
-            self._receive_loop()
-
-        except Exception as e:
-            self.connected = False
-            if self._on_error:
-                self._on_error(self, str(e))
-            raise
-
-    def _receive_loop(self):
-        try:
-            while self._running:
-                data = self._recv_frame()
-                if data is None:
-                    break
-                if self._on_message:
-                    self._on_message(self, data)
-        except Exception as e:
-            if self._running and self._on_error:
-                self._on_error(self, str(e))
-        finally:
-            self.connected = False
-            if self._on_close:
-                self._on_close(self)
-
-    def _recv_frame(self):
-        """Read a single WebSocket frame. Returns decoded text or None on close/error.
-        Handles ping/pong inline without recursion."""
-        import struct
-        while True:
-            header = self._recv_exact(2)
-            if not header:
-                return None
-            fin_op = header[0]
-            opcode = fin_op & 0x0F
-            payload_len = header[1] & 0x7F
-            masked = bool(header[1] & 0x80)
-
-            # Close frame
-            if opcode == 0x8:
-                return None
-
-            # Ping — send pong and continue loop (no recursion)
-            if opcode == 0x9:
-                self._send_pong()
-                continue
-
-            # Read extended payload length
-            if payload_len == 126:
-                ext = self._recv_exact(2)
-                if not ext:
-                    return None
-                payload_len = struct.unpack("!H", ext)[0]
-            elif payload_len == 127:
-                ext = self._recv_exact(8)
-                if not ext:
-                    return None
-                payload_len = struct.unpack("!Q", ext)[0]
-
-            # Read mask key (server-to-client frames are NOT masked per RFC 6455)
-            if masked:
-                mask_key = self._recv_exact(4)
-                if not mask_key:
-                    return None
-            else:
-                mask_key = None
-
-            # Read payload
-            payload = self._recv_exact(payload_len)
-            if payload is None:
-                return None
-            if mask_key:
-                payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-
-            # Decompress if needed
-            payload = self._decompress_payload(payload)
-
-            # Return text for text/binary frames, empty string for others
-            if opcode in (0x1, 0x2):
-                return payload.decode("utf-8", errors="replace")
-            return ""
-
-    def _send_pong(self):
-        """Send a masked empty pong frame (RFC 6455: client-to-server frames MUST be masked)."""
-        import os
-        try:
-            mask_key = os.urandom(4)
-            # Pong frame: FIN + opcode 0x8A, masked, length 0
-            self.sock.sendall(bytes([0x8A, 0x80]) + mask_key)
-        except Exception:
-            pass
-
-    def _recv_exact(self, n):
-        """Read exactly n bytes from the socket. Returns None on disconnect."""
+    def _read_handshake(self):
         data = b""
-        while len(data) < n:
-            try:
-                chunk = self.sock.recv(n - len(data))
-                if not chunk:
-                    return None
-                data += chunk
-            except OSError:
-                return None
-        return data
-
-    def _compress_payload(self, data):
-        """Compress data with zlib. Returns bytes with compression flag prefix."""
-        import zlib
-        if not COMPRESSION_ENABLED or not self._compression or len(data) < 64:
-            # Don't bother compressing tiny payloads
-            return b"\x00" + data
-        compressed = zlib.compress(data, COMPRESSION_LEVEL)
-        if len(compressed) < len(data):
-            return b"\x01" + compressed
-        return b"\x00" + data
-
-    def _decompress_payload(self, data):
-        """Decompress data. First byte is compression flag."""
-        if not data:
-            return data
-        flag = data[0:1]
-        payload = data[1:]
-        if flag == b"\x01":
-            import zlib
-            try:
-                return zlib.decompress(payload)
-            except zlib.error:
-                return payload
-        return payload
-
-    def send(self, message):
-        import struct
-        if isinstance(message, str):
-            message = message.encode("utf-8")
-        # Compress the payload
-        message = self._compress_payload(message)
-        mask_key = os.urandom(4)
-        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(message))
-        length = len(masked)
-        # Use binary opcode (0x2) if compressed, text opcode (0x1) if not
-        is_binary = message[:1] == b"\x01"
-        opcode = 0x2 if is_binary else 0x1
-        if length < 126:
-            header = bytes([0x80 | opcode, 0x80 | length])
-        elif length < 65536:
-            header = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack("!H", length)
-        else:
-            header = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack("!Q", length)
-        self.sock.sendall(header + mask_key + masked)
+        while b"\r\n\r\n" not in data:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > 65536:
+                raise ProtocolError("Handshake response too large")
+        return data.decode("iso-8859-1", errors="replace")
 
     def close(self):
-        self._running = False
         self.connected = False
-        if self.sock:
-            try:
-                self.sock.sendall(bytes([0x88, 0x00]))
+        try:
+            if self.sock:
                 self.sock.close()
-            except:
-                pass
+        except Exception:
+            pass
+        self.sock = None
+
+    def _recv_exact(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise ProtocolError("Socket closed")
+            data += chunk
+        return data
+
+    def recv(self):
+        first = self._recv_exact(2)
+        b1, b2 = struct.unpack("!BB", first)
+        opcode = b1 & 0x0F
+        masked = bool(b2 & 0x80)
+        size = b2 & 0x7F
+        if size == 126:
+            size = struct.unpack("!H", self._recv_exact(2))[0]
+        elif size == 127:
+            size = struct.unpack("!Q", self._recv_exact(8))[0]
+        if size > MAX_FRAME_BYTES:
+            raise ProtocolError("Frame too large: %s bytes" % size)
+        mask = self._recv_exact(4) if masked else None
+        payload = self._recv_exact(size) if size else b""
+        if masked and mask:
+            payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+        if opcode == 0x8:
+            self.close()
+            return None
+        if opcode == 0x9:
+            self._send_frame(payload, 0xA)
+            return "__ping__"
+        if opcode == 0xA:
+            return "__pong__"
+        if opcode == 0x1:
+            return payload.decode("utf-8", errors="replace")
+        if opcode == 0x2:
+            if not payload:
+                return ""
+            flag, body = payload[:1], payload[1:]
+            if flag == b"\x01":
+                body = zlib.decompress(body)
+            elif flag != b"\x00":
+                raise ProtocolError("Unknown binary payload flag")
+            return body.decode("utf-8", errors="replace")
+        return ""
+
+    def send_json(self, obj, compress=False):
+        raw = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if compress and len(raw) > 1024:
+            self._send_frame(b"\x01" + zlib.compress(raw), 0x2)
+        else:
+            self._send_frame(raw, 0x1)
+
+    def _send_frame(self, payload, opcode):
+        payload = payload or b""
+        key = os.urandom(4)
+        size = len(payload)
+        if size < 126:
+            header = struct.pack("!BB", 0x80 | opcode, 0x80 | size)
+        elif size < (1 << 16):
+            header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, size)
+        else:
+            header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, size)
+        masked = bytes(byte ^ key[i % 4] for i, byte in enumerate(payload))
+        self.sock.sendall(header + key + masked)
 
 
-# ============================================================
-# Kodi Event Monitor — captures notifications and pushes them
-# ============================================================
-
-class KodiEventMonitor(xbmc.Monitor):
-    """Listens for Kobi events and pushes them to the proxy."""
-
-    def __init__(self, on_event_callback):
-        super().__init__()
-        self._on_event = on_event_callback
-
-    def onPlayBackStarted(self):
-        self._push_event("playback_started", get_now_playing())
-
-    def onPlayBackStopped(self):
-        self._push_event("playback_stopped", {})
-
-    def onPlayBackPaused(self):
-        self._push_event("playback_paused", get_now_playing())
-
-    def onPlayBackResumed(self):
-        self._push_event("playback_resumed", get_now_playing())
-
-    def onPlayBackSeek(self, time_val, seek_offset):
-        self._push_event("playback_seek", {"time": time_val, "offset": seek_offset})
-
-    def onPlayBackSpeedChanged(self, speed):
-        self._push_event("playback_speed", {"speed": speed})
-
-    def onVolumeChanged(self, volume):
-        self._push_event("volume_changed", get_volume_info())
-
-    def onScreensaverActivated(self):
-        self._push_event("screensaver_on", {})
-
-    def onScreensaverDeactivated(self):
-        self._push_event("screensaver_off", {})
-
-    def onNotification(self, sender, method, data):
-        # Forward all Kodi notifications
-        try:
-            data_obj = json.loads(data) if data else {}
-        except:
-            data_obj = {"raw": data}
-        self._push_event("notification", {
-            "sender": sender,
-            "method": method,
-            "data": data_obj,
-        })
-
-    def onSettingsChanged(self):
-        self._push_event("settings_changed", {})
-
-    def _push_event(self, event_type, data):
-        """Send event to proxy via callback."""
-        if self._on_event:
-            self._push_safe(event_type, data)
-
-    def _push_safe(self, event_type, data):
-        try:
-            self._on_event(event_type, data)
-        except Exception as e:
-            log(f"Event push error: {e}")
+def clean_headers(headers):
+    out = {}
+    for k, v in (headers or {}).items():
+        name = str(k)
+        if name.lower() in HOP_HEADERS or "\r" in name or "\n" in name:
+            continue
+        out[name] = str(v).replace("\r", "").replace("\n", "")
+    return out
 
 
-# ============================================================
-# Proxy Service — manages connection and handles requests
-# ============================================================
-
-class ProxyService:
-    def __init__(self):
-        self.ws = None
-        self.running = True
-        self.connected = False
-        self._reconnect_delay = 5
-        self._monitor = None
-        self._stats_thread = None
-
-    def connect(self):
-        log(f"Connecting to proxy at {SERVER_HOST}:{SERVER_PORT}")
-        while self.running:
-            try:
-                self.ws = SimpleWSClient(SERVER_HOST, SERVER_PORT)
-                self.ws.on_open(self.on_open)
-                self.ws.on_message(self.on_message)
-                self.ws.on_close(self.on_close)
-                self.ws.on_error(self.on_error)
-                self.ws.connect()
-            except Exception as e:
-                log(f"Connection error: {e}")
-            self.connected = False
-            if not self.running:
-                break
-            log(f"Reconnecting in {self._reconnect_delay}s...")
-            time.sleep(self._reconnect_delay)
-            self._reconnect_delay = min(self._reconnect_delay * 2, 60)
-
-    def push_event(self, event_type, data):
-        """Push a real-time event to the proxy."""
-        if self.ws and self.connected:
-            try:
-                msg = json.dumps({"type": "event", "event": event_type, "data": data})
-                self.ws.send(msg)
-            except Exception as e:
-                log(f"Failed to push event: {e}")
-
-    def on_open(self, ws):
-        self.connected = True
-        self._reconnect_delay = 5
-        log("Connected to proxy server")
-
-        # Send hello with Kodi info and add-on version
-        info = get_kodi_info()
-        info["addon_version"] = "1.0.5"
-        info["protocol_version"] = 2
-        ws.send(json.dumps({"type": "connected", "info": info}))
-
-        # Start Kodi event monitor
-        self._monitor = KodiEventMonitor(self.push_event)
-
-        # Start periodic stats polling
-        self._stats_thread = threading.Thread(target=self._stats_loop, daemon=True)
-        self._stats_thread.start()
-
-    def _stats_loop(self):
-        """Push system stats every 10 seconds."""
-        while self.running and self.connected:
-            try:
-                stats = get_system_stats()
-                now_playing = get_now_playing()
-                volume = get_volume_info()
-                self.push_event("stats_update", {
-                    "stats": stats,
-                    "now_playing": now_playing,
-                    "volume": volume,
-                    "timestamp": time.time(),
-                })
-            except Exception as e:
-                log(f"Stats error: {e}")
-            time.sleep(10)
-
-    def on_message(self, ws, message):
-        try:
-            data = json.loads(message)
-        except json.JSONDecodeError:
-            return
-
-        msg_type = data.get("type")
-
-        if msg_type == "request":
-            self.handle_request(ws, data)
-        elif msg_type == "get_logs":
-            self.handle_get_logs(ws, data)
-        elif msg_type == "get_info":
-            self.handle_get_info(ws, data)
-        elif msg_type == "kodi_command":
-            self.handle_kodi_command(ws, data)
-
-    def handle_request(self, ws, data):
-        """Proxy HTTP request to Kodi's local web interface."""
-        import urllib.request
-        import urllib.error
-
-        req_id = data["id"]
-        method = data["method"]
-        path = data["path"]
-        body = data.get("body", "")
-        headers = data.get("headers", {})
-
-        url = f"http://127.0.0.1:{KODI_PORT}{path}"
-        log(f"Proxying {method} {path}")
-
-        try:
-            req_data = body.encode("utf-8") if body else None
-            req = urllib.request.Request(url, data=req_data, method=method)
-            for key, val in headers.items():
-                if key.lower() not in ("host", "connection"):
-                    req.add_header(key, val)
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                resp_body = resp.read()
-                resp_headers = dict(resp.getheaders())
-            response = {
-                "type": "response",
-                "id": req_id,
-                "status": resp.status,
-                "headers": resp_headers,
-                "body": resp_body.decode("utf-8", errors="replace"),
-            }
-        except urllib.error.HTTPError as e:
-            response = {
-                "type": "response",
-                "id": req_id,
-                "status": e.code,
-                "headers": dict(e.headers.items()),
-                "body": e.read().decode("utf-8", errors="replace"),
-            }
-        except Exception as e:
-            response = {
-                "type": "response",
-                "id": req_id,
-                "status": 502,
-                "headers": {"Content-Type": "text/plain"},
-                "body": f"Proxy error: {e}",
-            }
-
-        try:
-            ws.send(json.dumps(response))
-        except Exception as e:
-            log(f"Failed to send response: {e}")
-
-    def handle_get_logs(self, ws, data):
-        req_id = data.get("id", "0")
-        lines = data.get("lines", 200)
-        result = read_kodi_logs(lines)
-        response = {"type": "logs", "id": req_id, "data": result}
-        try:
-            ws.send(json.dumps(response))
-        except Exception as e:
-            log(f"Failed to send logs: {e}")
-
-    def handle_get_info(self, ws, data):
-        req_id = data.get("id", "0")
-        info = get_kodi_info()
-        response = {"type": "info", "id": req_id, "data": info}
-        try:
-            ws.send(json.dumps(response))
-        except Exception as e:
-            log(f"Failed to send info: {e}")
-
-    def handle_kodi_command(self, ws, data):
-        req_id = data.get("id", "0")
-        method = data.get("method", "")
-        params = data.get("params", {})
-
-        import urllib.request
-        import urllib.error
-
-        url = f"http://127.0.0.1:{KODI_PORT}/jsonrpc"
-        rpc_body = json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
-
-        try:
-            req = urllib.request.Request(
-                url, data=rpc_body.encode("utf-8"), method="POST",
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                resp_body = resp.read()
-            response = {
-                "type": "command_result", "id": req_id,
-                "status": resp.status, "body": resp_body.decode("utf-8", errors="replace"),
-            }
-        except Exception as e:
-            response = {
-                "type": "command_result", "id": req_id,
-                "status": 500, "body": f"Command error: {e}",
-            }
-
-        try:
-            ws.send(json.dumps(response))
-        except Exception as e:
-            log(f"Failed to send command result: {e}")
-
-    def on_close(self, ws):
-        self.connected = False
-        self._monitor = None
-        log("Disconnected from proxy")
-
-    def on_error(self, ws, error):
-        log(f"WebSocket error: {error}")
-        self.connected = False
-
-    def stop(self):
-        self.running = False
-        self._monitor = None
-        if self.ws:
-            self.ws.close()
+def validate_request(data):
+    req_id = data.get("id")
+    method = str(data.get("method", "GET")).upper()
+    path = data.get("path", "/")
+    if not req_id:
+        raise ValueError("Missing request id")
+    if method not in ALLOWED_METHODS:
+        raise ValueError("HTTP method not allowed: %s" % method)
+    if not isinstance(path, str) or not path.startswith("/") or "\r" in path or "\n" in path:
+        raise ValueError("Invalid path")
+    return req_id, method, path
 
 
-def run():
+def encode_body(body, headers):
+    body = body or b""
+    content_type = ""
+    for k, v in headers.items():
+        if k.lower() == "content-type":
+            content_type = v.lower()
+    if any(content_type.startswith(t) for t in TEXT_TYPES):
+        return {"body": body.decode("utf-8", errors="replace"), "body_encoding": "utf-8"}
+    return {"body": base64.b64encode(body).decode("ascii"), "body_encoding": "base64"}
+
+
+def decode_body(data):
+    body = data.get("body", "")
+    enc = data.get("body_encoding", "utf-8")
+    raw = base64.b64decode(body) if enc == "base64" else (body.encode("utf-8") if isinstance(body, str) else body or b"")
+    if len(raw) > MAX_REQUEST_BODY_BYTES:
+        raise ValueError("Request body too large")
+    return raw
+
+
+def send_error(ws, req_id, msg, status=500, response_type="error"):
+    ws.send_json({"type": response_type, "id": req_id, "status": status, "error": str(msg)})
+
+
+def handle_http(ws, data, cfg):
+    req_id = data.get("id", "unknown")
     try:
-        log("Xbox Web Proxy add-on starting")
-        log(f"Proxy server: {SERVER_HOST}:{SERVER_PORT}")
-        log(f"Kodi local port: {KODI_PORT}")
-        log(f"Compression: {'enabled (level ' + str(COMPRESSION_LEVEL) + ')' if COMPRESSION_ENABLED else 'disabled'}")
+        req_id, method, path = validate_request(data)
+        if data.get("query") and "?" not in path:
+            path += "?" + str(data["query"]).lstrip("?")
+        url = "http://%s:%s%s" % (cfg["kodi_host"], cfg["kodi_port"], path)
+        req = urllib.request.Request(url, data=decode_body(data) if method not in ("GET", "HEAD") else None, headers=clean_headers(data.get("headers", {})), method=method)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            headers = dict(resp.headers.items())
+            response = {"type": "response", "id": req_id, "status": getattr(resp, "status", resp.getcode()), "headers": clean_headers(headers)}
+            response.update(encode_body(resp.read(MAX_FRAME_BYTES), headers))
+            ws.send_json(response, compress=True)
+    except Exception as exc:
+        log("HTTP proxy error: %s" % exc, xbmc.LOGERROR)
+        send_error(ws, req_id, exc, 500, "response")
 
-        # Give Kodi a few seconds to finish add-on install/startup before
-        # creating sockets or event monitors. This avoids stressing Xbox Kodi
-        # during the install transaction.
-        startup_monitor = xbmc.Monitor()
-        if startup_monitor.waitForAbort(5):
-            return
 
-        service = ProxyService()
-        conn_thread = threading.Thread(target=service.connect, daemon=True)
-        conn_thread.start()
+def handle_rpc(ws, data, cfg):
+    req_id = data.get("id", "unknown")
+    try:
+        if not cfg["enable_management_rpc"]:
+            raise ValueError("Management RPC is disabled")
+        if not data.get("method"):
+            raise ValueError("Missing JSON-RPC method")
+        raw = xbmc.executeJSONRPC(json.dumps({"jsonrpc": "2.0", "method": data["method"], "params": data.get("params", {}), "id": req_id}))
+        try:
+            body = json.loads(raw) if raw else None
+        except Exception:
+            body = raw
+        ws.send_json({"type": "command_result", "id": req_id, "status": 200, "body": body})
+    except Exception as exc:
+        log("Kodi command error: %s" % exc, xbmc.LOGERROR)
+        send_error(ws, req_id, exc, 500, "command_result")
 
-        monitor = xbmc.Monitor()
-        while not monitor.abortRequested():
-            if monitor.waitForAbort(30):
-                break
 
-        service.stop()
-        log("Xbox Web Proxy add-on stopped")
-    except Exception as e:
-        log(f"Fatal service error: {e}", xbmc.LOGERROR)
+def handle_management(ws, data, cfg):
+    req_id = data.get("id", "unknown")
+    action = data.get("action", "")
+    addon_id = data.get("addon_id", ADDON_ID)
+    allowed = {
+        "refresh_repos": ["UpdateAddonRepos"],
+        "install_addon": ["InstallAddon(%s)" % addon_id],
+        "update_addon": ["UpdateAddonRepos", "UpdateLocalAddons", "InstallAddon(%s)" % addon_id],
+        "open_addon_browser": ["ActivateWindow(AddonBrowser)"],
+        "open_sources": ["ActivateWindow(FileManager)"],
+    }
+    try:
+        if not cfg["enable_management_rpc"]:
+            raise ValueError("Management RPC is disabled")
+        builtins = allowed.get(action)
+        if not builtins:
+            raise ValueError("Unsupported management action: %s" % action)
+        for builtin in builtins:
+            log("Running management builtin: %s" % builtin)
+            xbmc.executebuiltin(builtin)
+            time.sleep(0.5)
+        ws.send_json({"type": "management_result", "id": req_id, "status": 200, "body": {"ok": True, "action": action, "builtins": builtins}})
+    except Exception as exc:
+        log("Management command error: %s" % exc, xbmc.LOGERROR)
+        ws.send_json({"type": "management_result", "id": req_id, "status": 500, "body": {"ok": False, "action": action, "error": str(exc)}})
+
+
+def read_logs(lines):
+    lines = max(1, min(int(lines or 200), MAX_LOG_LINES))
+    for special in ("special://logpath/kodi.log", "special://home/kodi.log", "special://temp/kodi.log"):
+        path = xbmcvfs.translatePath(special)
+        if path and os.path.exists(path):
+            tail = collections.deque(maxlen=lines)
+            with open(path, "r", errors="replace") as handle:
+                for line in handle:
+                    tail.append(line.rstrip("\n"))
+            return {"path": special, "lines": list(tail), "truncated_to": lines}
+    return {"path": None, "lines": [], "error": "kodi.log not found in known paths"}
+
+
+def check_http(cfg):
+    try:
+        url = "http://%s:%s/jsonrpc" % (cfg["kodi_host"], cfg["kodi_port"])
+        body = json.dumps({"jsonrpc": "2.0", "method": "JSONRPC.Ping", "id": "startup"}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return {"ok": True, "status": getattr(resp, "status", resp.getcode())}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def check_execute_jsonrpc():
+    try:
+        raw = xbmc.executeJSONRPC(json.dumps({"jsonrpc": "2.0", "method": "JSONRPC.Ping", "id": "startup"}))
+        return {"ok": True, "response": json.loads(raw) if raw else raw}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def connected_info(cfg):
+    return {
+        "addon_id": ADDON_ID,
+        "addon_name": ADDON_NAME,
+        "addon_version": ADDON_VERSION,
+        "protocol_version": PROTOCOL_VERSION,
+        "python_version": sys.version,
+        "platform": sys.platform,
+        "build_version": xbmc.getInfoLabel("System.BuildVersion"),
+        "friendly_name": xbmc.getInfoLabel("System.FriendlyName"),
+        "local_http": check_http(cfg),
+        "execute_jsonrpc": check_execute_jsonrpc(),
+        "capabilities": {"http_proxy": cfg["enable_http_proxy"], "management_rpc": cfg["enable_management_rpc"], "log_tail": cfg["enable_log_tail"], "binary_http_bodies": True, "auth_token_present": bool(cfg["auth_token"])}
+    }
+
+
+def telemetry(ws):
+    ws.send_json({"type": "telemetry", "time": int(time.time()), "info": {"build_version": xbmc.getInfoLabel("System.BuildVersion"), "free_memory": xbmc.getInfoLabel("System.FreeMemory"), "cpu_usage": xbmc.getInfoLabel("System.CpuUsage"), "screen_resolution": xbmc.getInfoLabel("System.ScreenResolution")}})
+
+
+def dispatch(ws, msg, cfg):
+    if msg in (None, "", "__ping__", "__pong__"):
+        return
+    data = json.loads(msg)
+    kind = data.get("type")
+    if kind in ("request", "http_request"):
+        if not cfg["enable_http_proxy"]:
+            raise ValueError("HTTP proxy is disabled")
+        handle_http(ws, data, cfg)
+    elif kind in ("command", "kodi_command", "jsonrpc"):
+        handle_rpc(ws, data, cfg)
+    elif kind == "management":
+        handle_management(ws, data, cfg)
+    elif kind in ("get_logs", "logs"):
+        if not cfg["enable_log_tail"]:
+            raise ValueError("Log tail is disabled")
+        ws.send_json({"type": "logs_result", "id": data.get("id"), "status": 200, "body": read_logs(data.get("lines", 200))}, compress=True)
+    elif kind == "ping":
+        ws.send_json({"type": "pong", "id": data.get("id"), "time": int(time.time())})
+    else:
+        send_error(ws, data.get("id", "unknown"), "Unknown message type: %s" % kind, 400)
+
+
+def service_loop():
+    monitor = xbmc.Monitor()
+    attempt = 0
+    while not monitor.abortRequested():
+        cfg = config()
+        if not cfg["auth_token"]:
+            log("No auth token configured. Connecting without bridge authentication.", xbmc.LOGWARNING)
+        ws = None
+        try:
+            ws = SimpleWebSocket(cfg)
+            log("Connecting to bridge %s:%s%s" % (cfg["bridge_host"], cfg["bridge_port"], cfg["bridge_path"]))
+            ws.connect()
+            attempt = 0
+            ws.send_json({"type": "connected", "info": connected_info(cfg)})
+            next_telemetry = time.time() + cfg["telemetry_interval_seconds"]
+            while not monitor.abortRequested() and ws.connected:
+                if time.time() >= next_telemetry:
+                    telemetry(ws)
+                    next_telemetry = time.time() + cfg["telemetry_interval_seconds"]
+                try:
+                    dispatch(ws, ws.recv(), cfg)
+                except socket.timeout:
+                    continue
+        except Exception as exc:
+            log("Bridge loop error: %s\n%s" % (exc, traceback.format_exc()), xbmc.LOGERROR)
+        finally:
+            if ws:
+                ws.close()
+        attempt += 1
+        delay = min(cfg["reconnect_max_seconds"], cfg["reconnect_min_seconds"] * (2 ** min(attempt, 5)))
+        delay += random.randint(0, max(1, delay // 4))
+        log("Bridge disconnected. Reconnecting in %s seconds." % delay, xbmc.LOGWARNING)
+        monitor.waitForAbort(delay)
 
 
 if __name__ == "__main__":
-    run()
+    service_loop()

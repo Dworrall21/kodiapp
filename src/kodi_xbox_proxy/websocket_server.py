@@ -96,6 +96,12 @@ async def addon_handler(websocket) -> None:
                     "body": data.get("body", {}),
                 })
 
+            elif msg_type == "management_result":
+                _complete_pending(data.get("id"), {
+                    "status": data.get("status", 200),
+                    "body": data.get("body", {}),
+                })
+
             elif msg_type == "error":
                 _complete_pending(data.get("id"), {
                     "status": data.get("status", 500),

@@ -80,6 +80,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   <div class="tab" onclick="showTab('logs')">Debug Logs</div>
   <div class="tab" onclick="showTab('events')">Event Log</div>
   <div class="tab" onclick="showTab('commands')">Commands</div>
+  <div class="tab" onclick="showTab('manager')">Add-on Manager</div>
   <div class="tab" onclick="showTab('webui')">Kodi Web UI</div>
 </div>
 <div class="content">
@@ -177,6 +178,47 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
       <div class="result-box" id="cmdResult">Results will appear here...</div>
     </div>
   </div>
+  <div class="panel" id="panel-manager">
+    <div class="card">
+      <h3>Repository & Source Status</h3>
+      <div class="btn-row">
+        <button class="btn" onclick="refreshRepoStatus()">Refresh Status</button>
+        <button class="btn secondary" onclick="repoAction('refresh_repos')">Refresh Kodi Repos</button>
+        <button class="btn secondary" onclick="repoAction('open_addon_browser')">Open Add-on Browser on Kodi</button>
+        <button class="btn secondary" onclick="repoAction('open_sources')">Open File Sources on Kodi</button>
+      </div>
+      <div class="info-grid" id="repoStatusGrid">
+        <div class="info-item"><label>Local Source</label><span>—</span></div>
+        <div class="info-item"><label>GitHub Source</label><span>—</span></div>
+        <div class="info-item"><label>Installed Add-on</label><span>—</span></div>
+        <div class="info-item"><label>Published Version</label><span>—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Build & Publish Add-on</h3>
+      <div class="btn-row">
+        <input class="cmd-input" id="addonVersion" placeholder="Version, e.g. 1.0.7 (blank = current)" />
+        <button class="btn" onclick="repoBuildPublish()">Build + Publish Local Repo</button>
+        <button class="btn secondary" onclick="repoBuild()">Build Zip Only</button>
+        <button class="btn secondary" onclick="repoPublish()">Publish Existing Zip</button>
+        <button class="btn secondary" onclick="repoDeploy()">Deploy to GitHub Pages</button>
+      </div>
+      <p style="color:#8b949e;font-size:12px;margin-bottom:8px;">
+        Build creates a valid <code>script.xbox.proxy/</code>-rooted zip, publish updates local <code>/repo/</code> metadata, and deploy copies <code>repo_static</code> to gh-pages.
+      </p>
+      <div class="result-box" id="repoResult">Repository manager results will appear here...</div>
+    </div>
+    <div class="card">
+      <h3>Install / Update on Xbox Kodi</h3>
+      <div class="btn-row">
+        <button class="btn" onclick="repoAction('update_addon')">Trigger Add-on Update</button>
+        <button class="btn secondary" onclick="repoAction('install_addon')">Install Add-on</button>
+      </div>
+      <p style="color:#d29922;font-size:12px;">
+        These buttons require add-on v1.0.7+ because Kodi builtins must be run inside Kodi. If the installed add-on is older, publish the update first, then do the first update manually from Kodi once.
+      </p>
+    </div>
+  </div>
   <div class="panel" id="panel-webui">
     <div class="card">
       <h3>Kodi Web Interface</h3>
@@ -210,6 +252,7 @@ function showTab(name) {
     // dashboard tabs do not keep creating Kodi webserver noise.
     kodiFrame.src = 'about:blank';
   }
+  if (name === 'manager') refreshRepoStatus();
 }
 
 function showToast(msg, type) {
@@ -412,6 +455,52 @@ function clearLogs() {
   document.getElementById('logViewer').textContent = '';
   document.getElementById('logMeta').textContent = '';
 }
+
+function repoVersionInput() {
+  return document.getElementById('addonVersion').value.trim();
+}
+
+function showRepoResult(data) {
+  const box = document.getElementById('repoResult');
+  box.textContent = JSON.stringify(data, null, 2);
+}
+
+async function refreshRepoStatus() {
+  try {
+    const d = await api('/repo/status');
+    const addon = (((d.kodi || {}).addon || {}).result || {}).addon || {};
+    const repo = (((d.kodi || {}).repository || {}).result || {}).addon || {};
+    const sources = ((((d.kodi || {}).sources || {}).result || {}).sources || []).map(s => `${s.label}: ${s.file}`).join('\n');
+    const grid = document.getElementById('repoStatusGrid');
+    grid.innerHTML = `
+      <div class="info-item"><label>Local Source</label><span>${d.local_source_url || '—'}</span></div>
+      <div class="info-item"><label>GitHub Source</label><span>${d.gh_pages_url || '—'}</span></div>
+      <div class="info-item"><label>Installed Add-on</label><span>${addon.version || '—'} ${addon.enabled ? '(enabled)' : ''}</span></div>
+      <div class="info-item"><label>Source Version</label><span>${d.source_addon_version || '—'}</span></div>
+      <div class="info-item"><label>Repo Metadata</label><span>${d.static_metadata_version || d.local_metadata_version || '—'}</span></div>
+      <div class="info-item"><label>Latest Zip</label><span>${(d.latest_static_zip || {}).name || '—'}</span></div>
+      <div class="info-item"><label>Kodi Repository</label><span>${repo.version ? `${repo.name} ${repo.version}` : '—'}</span></div>
+      <div class="info-item"><label>Kodi Sources</label><span style="white-space:pre-wrap">${sources || '—'}</span></div>`;
+    showRepoResult(d);
+    showToast('Repository status refreshed', 'success');
+  } catch (e) {
+    showToast('Repository status failed: ' + e, 'error');
+  }
+}
+
+async function repoPost(path, body = {}) {
+  const d = await api(path, { method: 'POST', body: JSON.stringify(body) });
+  showRepoResult(d);
+  if (d.ok === false || d.error) showToast('Action failed', 'error');
+  else showToast('Action complete', 'success');
+  refreshRepoStatus();
+}
+
+function repoBuild() { repoPost('/repo/build', {version: repoVersionInput()}); }
+function repoPublish() { repoPost('/repo/publish'); }
+function repoDeploy() { repoPost('/repo/deploy'); }
+function repoBuildPublish() { repoPost('/repo/build-publish', {version: repoVersionInput()}); }
+function repoAction(action) { repoPost('/repo/kodi-action', {action}); }
 
 async function sendCommand(method, params = {}) {
   try {

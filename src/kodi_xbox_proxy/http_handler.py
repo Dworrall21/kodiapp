@@ -4,11 +4,12 @@ import asyncio
 import base64
 import gzip
 import json
+import mimetypes
 import os
 import threading
 import time
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import http.server
 
@@ -17,6 +18,7 @@ from .compression import gzip_compress
 from .config import ADDON_REQUEST_TIMEOUT, PROJECT_DIR, WS_SEND_TIMEOUT, SSE_KEEPALIVE
 from .websocket_server import ws_send_compressed
 from .web_ui import WEB_UI_HTML
+from . import repo_manager
 
 HOP_HEADERS = {
     "connection",
@@ -87,25 +89,49 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     # --- Repo serving ---
 
     def handle_repo_get_or_head(self, send_body=True):
-        path = self.path.split("?", 1)[0]
+        path = unquote(self.path.split("?", 1)[0])
+        if path == "/repo":
+            path = "/repo/"
+        if not path.startswith("/repo/"):
+            return False
 
-        if path in ("/repo", "/repo/"):
-            self.serve_html(self._repo_index_html(), send_body=send_body)
+        rel = path[len("/repo/"):]
+        if rel == "":
+            target = repo_manager.REPO_STATIC / "index.html"
+        else:
+            target = (repo_manager.REPO_STATIC / rel).resolve()
+            repo_root = repo_manager.REPO_STATIC.resolve()
+            if repo_root not in target.parents and target != repo_root:
+                self.send_json(403, {"error": "Invalid repo path"})
+                return True
+            if target.is_dir():
+                target = target / "index.html"
+
+        if not target.exists() or not target.is_file():
+            self.send_json(404, {"error": f"Repo file not found: {rel or 'index.html'}"})
             return True
-        if path in ("/repo/script.xbox.proxy", "/repo/script.xbox.proxy/"):
-            self.serve_html(self._package_index_html(), send_body=send_body)
-            return True
-        if path in ("/repo/addons.xml", "/repo/addons.xml/"):
-            self.serve_file("addons.xml", "text/xml", send_body=send_body)
-            return True
-        if path in ("/repo/addons.xml.md5", "/repo/addons.xml.md5/"):
-            self._serve_addons_md5(send_body)
-            return True
-        if path in ("/repo/script.xbox.proxy/script.xbox.proxy-1.0.4.zip",
-                    "/repo/script.xbox.proxy/script.xbox.proxy-1.0.4.zip/"):
-            self.serve_file("addon.zip", "application/zip", as_attachment=False, send_body=send_body)
-            return True
-        return False
+
+        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if target.suffix == ".md5":
+            content_type = "text/plain"
+        elif target.suffix == ".xml":
+            content_type = "text/xml"
+        self.serve_absolute_file(target, content_type, send_body=send_body)
+        return True
+
+    def serve_absolute_file(self, filepath, content_type="application/octet-stream", send_body=True):
+        try:
+            content = filepath.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if send_body:
+                self.wfile.write(content)
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
 
     def _serve_addons_md5(self, send_body):
         try:
@@ -290,6 +316,38 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, {"connected": state.addon_ws is not None, "info": state.addon_info})
             return
 
+        if path in ("repo/status", "repo/status/"):
+            self.handle_repo_status()
+            return
+
+        if path in ("repo/build", "repo/build/"):
+            body = self._json_body()
+            self._safe_repo_action(lambda: repo_manager.build_package(body.get("version") or None))
+            return
+
+        if path in ("repo/publish", "repo/publish/"):
+            self._safe_repo_action(repo_manager.publish_local)
+            return
+
+        if path in ("repo/deploy", "repo/deploy/"):
+            self._safe_repo_action(repo_manager.deploy_gh_pages)
+            return
+
+        if path in ("repo/build-publish", "repo/build-publish/"):
+            body = self._json_body()
+            def action():
+                build = repo_manager.build_package(body.get("version") or None)
+                publish = repo_manager.publish_local()
+                return {"build": build, "publish": publish}
+            self._safe_repo_action(action)
+            return
+
+        if path in ("repo/kodi-action", "repo/kodi-action/"):
+            body = self._json_body()
+            action = body.get("action", "refresh_repos")
+            self.handle_kodi_management_action(action)
+            return
+
         if path in ("command", "command/"):
             body = self.read_body()
             try:
@@ -309,6 +367,61 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             return
 
         self.send_json(404, {"error": "Unknown API endpoint"})
+
+    def _json_body(self):
+        body = self.read_body()
+        if not body:
+            return {}
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return {}
+
+    def _safe_repo_action(self, func):
+        try:
+            self.send_json(200, {"ok": True, "result": func()})
+        except Exception as exc:
+            self.send_json(500, {"ok": False, "error": str(exc)})
+
+    def handle_repo_status(self):
+        data = repo_manager.status()
+        data["kodi"] = {
+            "addon": self.kodi_jsonrpc("Addons.GetAddonDetails", {
+                "addonid": repo_manager.ADDON_ID,
+                "properties": ["name", "version", "enabled", "path", "dependencies"],
+            }),
+            "repository": self.kodi_jsonrpc("Addons.GetAddonDetails", {
+                "addonid": repo_manager.REPOSITORY_ID,
+                "properties": ["name", "version", "enabled"],
+            }),
+            "sources": self.kodi_jsonrpc("Files.GetSources", {"media": "files"}),
+        }
+        self.send_json(200, data)
+
+    def handle_kodi_management_action(self, action):
+        allowed = {
+            "refresh_repos",
+            "install_addon",
+            "update_addon",
+            "open_addon_browser",
+            "open_sources",
+        }
+        if action not in allowed:
+            self.send_json(400, {"ok": False, "error": f"Unsupported action: {action}"})
+            return
+        response = self.roundtrip_to_addon({
+            "type": "management",
+            "action": action,
+            "addon_id": repo_manager.ADDON_ID,
+            "repository_id": repo_manager.REPOSITORY_ID,
+            "source_url": repo_manager.GH_PAGES_URL,
+        }, timeout=ADDON_REQUEST_TIMEOUT)
+        if response is None:
+            return
+        body = response.get("body", {}) or {}
+        if isinstance(body, dict) and "Unknown message type: management" in str(body):
+            body["hint"] = "Installed add-on is older than v1.0.7. Publish v1.0.7, update once from Kodi's add-on manager, then these remote management buttons will work."
+        self.send_json(response.get("status", 200), body)
 
     def handle_live_snapshot(self):
         """Return a dashboard-friendly live snapshot via Kodi JSON-RPC.
