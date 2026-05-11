@@ -2,6 +2,8 @@ import SwiftUI
 
 struct RemoteView: View {
     @EnvironmentObject var viewModel: RemoteViewModel
+    @State private var showKeyboard = false
+    @State private var keyboardText = ""
 
     var body: some View {
         ScrollView {
@@ -62,7 +64,7 @@ struct RemoteView: View {
                         .font(.subheadline)
                     if let telemetry = viewModel.telemetry {
                         HStack {
-                            Text("Volume: \(telemetry.volume.map(String.init) ?? "—")")
+                            Text("Volume: \(telemetry.volume.map(String.init) ?? "\u2014")")
                             Spacer()
                             Text("Muted: \(telemetry.muted == true ? "Yes" : "No")")
                         }
@@ -95,6 +97,11 @@ struct RemoteView: View {
         } message: {
             Text(viewModel.lastError ?? "Unknown error")
         }
+        .sheet(isPresented: $showKeyboard) {
+            KeyboardSheet(text: $keyboardText) { text in
+                viewModel.sendCommand("Input.SendText", params: ["text": text])
+            }
+        }
     }
 }
 
@@ -103,31 +110,53 @@ private struct RemoteControlPad: View {
 
     var body: some View {
         VStack(spacing: 14) {
+            // D-pad
             HStack {
                 Spacer()
-                remoteButton(systemName: "chevron.up", method: "Input.Up")
+                dpadButton(systemName: "chevron.up", method: "Input.Up")
                 Spacer()
             }
             HStack {
-                remoteButton(systemName: "chevron.left", method: "Input.Left")
-                remoteButton(systemName: "circle.fill", method: "Input.Select")
-                remoteButton(systemName: "chevron.right", method: "Input.Right")
+                dpadButton(systemName: "chevron.left", method: "Input.Left")
+                dpadButton(systemName: "circle.fill", method: "Input.Select")
+                dpadButton(systemName: "chevron.right", method: "Input.Right")
             }
             HStack {
                 Spacer()
-                remoteButton(systemName: "chevron.down", method: "Input.Down")
+                dpadButton(systemName: "chevron.down", method: "Input.Down")
                 Spacer()
+            }
+
+            // Navigation / utility buttons
+            HStack(spacing: 12) {
+                textButton("Info", method: "Input.Info")
+                textButton("Context", method: "Input.ContextMenu")
+            }
+            HStack(spacing: 12) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    showKeyboard = true
+                } label: {
+                    Image(systemName: "keyboard")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                textButton("OK", method: "Input.Select")
             }
             HStack(spacing: 12) {
                 textButton("Back", method: "Input.Back")
                 textButton("Home", method: "Input.Home")
             }
+
+            // Playback + volume row
             HStack(spacing: 12) {
-                actionButton("speaker.wave.1", action: "volumedown")
-                actionButton("playpause.fill", action: "playpause")
-                actionButton("stop.fill", action: "stop")
-                actionButton("speaker.slash", action: "mute")
-                actionButton("speaker.wave.3", action: "volumeup")
+                actionButton("speaker.wave.1", action: "volumedown", label: "Vol-")
+                actionButton("playpause.fill", action: "playpause", label: nil)
+                actionButton("stop.fill", action: "stop", label: nil)
+                actionButton("speaker.slash", action: "mute", label: nil)
+                actionButton("speaker.wave.3", action: "volumeup", label: "Vol+")
             }
         }
         .padding()
@@ -135,8 +164,11 @@ private struct RemoteControlPad: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func remoteButton(systemName: String, method: String) -> some View {
-        Button { viewModel.sendCommand(method) } label: {
+    private func dpadButton(systemName: String, method: String) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            viewModel.sendCommand(method)
+        } label: {
             Image(systemName: systemName)
                 .font(.title2)
                 .frame(width: 64, height: 54)
@@ -146,7 +178,10 @@ private struct RemoteControlPad: View {
     }
 
     private func textButton(_ title: String, method: String) -> some View {
-        Button { viewModel.sendCommand(method) } label: {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            viewModel.sendCommand(method)
+        } label: {
             Text(title)
                 .frame(maxWidth: .infinity)
                 .padding()
@@ -155,14 +190,63 @@ private struct RemoteControlPad: View {
         }
     }
 
-    private func actionButton(_ systemName: String, action: String) -> some View {
+    private func actionButton(_ systemName: String, action: String, label: String?) -> some View {
         Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             viewModel.sendCommand("Input.ExecuteAction", params: ["action": action])
         } label: {
-            Image(systemName: systemName)
-                .frame(width: 44, height: 44)
-                .background(Color.orange.opacity(0.2))
-                .clipShape(Circle())
+            VStack(spacing: 2) {
+                Image(systemName: systemName)
+                    .font(.title3)
+                if let label {
+                    Text(label)
+                        .font(.caption2)
+                }
+            }
+            .frame(width: 44, height: 44)
+            .background(Color.orange.opacity(0.2))
+            .clipShape(Circle())
+        }
+    }
+}
+
+// MARK: - Keyboard sheet for text input
+
+struct KeyboardSheet: View {
+    @Binding var text: String
+    let onSubmit: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                TextField("Type text to send…", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+
+                Text("Tap Send to type this into Kodi's active text field.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+
+                Spacer()
+            }
+            .padding(.top)
+            .navigationTitle("Send Text")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Send") {
+                        let value = text
+                        text = ""
+                        onSubmit(value)
+                    }
+                    .disabled(text.isEmpty)
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
         }
     }
 }

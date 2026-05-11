@@ -20,15 +20,50 @@ final class RemoteViewModel: ObservableObject {
     private var commandCounter = 0
     private var cancellables = Set<AnyCancellable>()
 
+    private enum Keys {
+        static let port = "kodi.bridge.port"
+        static let token = "kodi.bridge.token"
+    }
+
     var localPort: UInt16 { UInt16(localPortString) ?? 9192 }
     var canSendCommands: Bool { connectionStatus == .connected || connectionStatus == .authenticated }
 
     init() {
+        // Restore persisted settings
+        if let savedPort = UserDefaults.standard.string(forKey: Keys.port), !savedPort.isEmpty {
+            localPortString = savedPort
+        }
+        if let savedToken = UserDefaults.standard.string(forKey: Keys.token) {
+            pairingToken = savedToken
+        }
+
         localIP = bridgeServer.localAddress
         bindServer()
+        bindSettingsPersistence()
+    }
+
+    /// Persist port and token whenever they change.
+    private func bindSettingsPersistence() {
+        $localPortString
+            .dropFirst()
+            .sink { _ in
+                UserDefaults.standard.set(self.localPortString, forKey: Keys.port)
+            }
+            .store(in: &cancellables)
+
+        $pairingToken
+            .dropFirst()
+            .sink { _ in
+                UserDefaults.standard.set(self.pairingToken, forKey: Keys.token)
+            }
+            .store(in: &cancellables)
     }
 
     func toggleListening() {
+        // Persist current settings before toggling
+        UserDefaults.standard.set(localPortString, forKey: Keys.port)
+        UserDefaults.standard.set(pairingToken, forKey: Keys.token)
+
         if isListening {
             bridgeServer.stopListening()
         } else {
