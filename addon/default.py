@@ -6,6 +6,12 @@ Protocol v2:
 - Text frames are plain JSON.
 - Binary frames use a one-byte envelope: 0x00 raw JSON bytes, 0x01 zlib JSON bytes.
 - HTTP bodies are returned as utf-8 text or base64 binary using body_encoding.
+
+iPhone Remote Bridge (Option B2):
+- Optional custom iPhone remote app mode.
+- The iPhone app listens on the LAN while foregrounded.
+- This add-on connects outbound to the iPhone app and receives JSON-line commands.
+- This is not official Kore compatibility and does not require inbound Xbox LAN access.
 """
 from __future__ import unicode_literals
 
@@ -19,6 +25,7 @@ import socket
 import ssl
 import struct
 import sys
+import threading
 import time
 import traceback
 import urllib.request
@@ -28,6 +35,27 @@ import zlib
 import xbmc
 import xbmcaddon
 import xbmcvfs
+
+try:
+    from iphone_bridge import (
+        BridgeProtocolError,
+        encode_json_line,
+        extract_json_lines,
+        make_auth_message,
+        make_error_message,
+        make_hello_message,
+        make_result_message,
+    )
+except Exception:
+    from addon.iphone_bridge import (
+        BridgeProtocolError,
+        encode_json_line,
+        extract_json_lines,
+        make_auth_message,
+        make_error_message,
+        make_hello_message,
+        make_result_message,
+    )
 
 ADDON = xbmcaddon.Addon()
 ADDON_ID = ADDON.getAddonInfo("id")
@@ -91,6 +119,12 @@ def config():
         "enable_http_proxy": bool_setting("enable_http_proxy", True),
         "enable_management_rpc": bool_setting("enable_management_rpc", True),
         "enable_log_tail": bool_setting("enable_log_tail", True),
+        "enable_iphone_bridge": bool_setting("enable_iphone_bridge", False),
+        "iphone_bridge_host": setting("iphone_bridge_host", ""),
+        "iphone_bridge_port": int_setting("iphone_bridge_port", 9192, 1, 65535),
+        "iphone_bridge_token": setting("iphone_bridge_token", ""),
+        "iphone_bridge_reconnect_min_seconds": int_setting("iphone_bridge_reconnect_min_seconds", 3, 1, 300),
+        "iphone_bridge_reconnect_max_seconds": int_setting("iphone_bridge_reconnect_max_seconds", 30, 1, 600),
     }
 
 
@@ -454,12 +488,164 @@ def connected_info(cfg):
         "friendly_name": xbmc.getInfoLabel("System.FriendlyName"),
         "local_http": check_http(cfg),
         "execute_jsonrpc": check_execute_jsonrpc(),
-        "capabilities": {"http_proxy": cfg["enable_http_proxy"], "management_rpc": cfg["enable_management_rpc"], "log_tail": cfg["enable_log_tail"], "binary_http_bodies": True, "auth_token_present": bool(cfg["auth_token"])}
+        "capabilities": {
+            "http_proxy": cfg["enable_http_proxy"],
+            "management_rpc": cfg["enable_management_rpc"],
+            "log_tail": cfg["enable_log_tail"],
+            "binary_http_bodies": True,
+            "auth_token_present": bool(cfg["auth_token"]),
+            "iphone_bridge": cfg["enable_iphone_bridge"],
+            "iphone_bridge_host": cfg["iphone_bridge_host"] if cfg["enable_iphone_bridge"] else None,
+            "iphone_bridge_port": cfg["iphone_bridge_port"] if cfg["enable_iphone_bridge"] else None,
+        },
     }
 
 
 def telemetry(ws):
     ws.send_json({"type": "telemetry", "time": int(time.time()), "info": {"build_version": xbmc.getInfoLabel("System.BuildVersion"), "free_memory": xbmc.getInfoLabel("System.FreeMemory"), "cpu_usage": xbmc.getInfoLabel("System.CpuUsage"), "screen_resolution": xbmc.getInfoLabel("System.ScreenResolution")}})
+
+
+def kodi_jsonrpc(method, params=None, req_id="iphone-bridge"):
+    raw = xbmc.executeJSONRPC(json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}, "id": req_id}))
+    try:
+        return json.loads(raw) if raw else None
+    except Exception:
+        return raw
+
+
+def iphone_telemetry_payload():
+    active_players = kodi_jsonrpc("Player.GetActivePlayers", req_id="iphone-telemetry-players")
+    app_props = kodi_jsonrpc("Application.GetProperties", {"properties": ["volume", "muted"]}, "iphone-telemetry-app")
+    active = []
+    volume = None
+    muted = None
+    item = None
+    try:
+        active = active_players.get("result") or []
+    except Exception:
+        active = []
+    try:
+        props = app_props.get("result") or {}
+        volume = props.get("volume")
+        muted = props.get("muted")
+    except Exception:
+        pass
+    try:
+        if active:
+            player_id = active[0].get("playerid")
+            item_result = kodi_jsonrpc("Player.GetItem", {"playerid": player_id, "properties": ["title", "file", "thumbnail", "artist", "album"]}, "iphone-telemetry-item")
+            item = (item_result.get("result") or {}).get("item")
+    except Exception:
+        item = None
+    return {"type": "telemetry", "timestamp": int(time.time()), "active_players": active, "volume": volume, "muted": muted, "item": item}
+
+
+class IPhoneBridgeClient(object):
+    def __init__(self, cfg, monitor):
+        self.cfg = cfg
+        self.monitor = monitor
+        self.sock = None
+        self.buffer = b""
+        self.authenticated = not bool(cfg.get("iphone_bridge_token"))
+
+    def close(self):
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+        self.sock = None
+
+    def send(self, message):
+        if not self.sock:
+            return
+        self.sock.sendall(encode_json_line(message))
+
+    def connect(self):
+        host = self.cfg.get("iphone_bridge_host")
+        port = self.cfg.get("iphone_bridge_port")
+        if not host:
+            raise ValueError("iPhone bridge is enabled but iphone_bridge_host is empty")
+        self.sock = socket.create_connection((host, port), timeout=10)
+        self.sock.settimeout(1.0)
+        log("Connected to iPhone Remote Bridge at %s:%s" % (host, port))
+        self.send(make_hello_message(ADDON_ID, ADDON_VERSION, ADDON_NAME, xbmc.getInfoLabel("System.BuildVersion"), sys.platform))
+        auth = make_auth_message(self.cfg.get("iphone_bridge_token"))
+        if auth:
+            self.send(auth)
+
+    def handle_command(self, message):
+        req_id = message.get("id") or "iphone-command"
+        if not self.authenticated:
+            self.send(make_error_message(req_id, "Not authenticated", "not_authenticated"))
+            return
+        method = message.get("method")
+        if not isinstance(method, str) or not method:
+            self.send(make_error_message(req_id, "Missing JSON-RPC method", "bad_command"))
+            return
+        try:
+            result = kodi_jsonrpc(method, message.get("params") or {}, req_id)
+            self.send(make_result_message(req_id, True, result))
+        except Exception as exc:
+            log("iPhone bridge command error: %s" % exc, xbmc.LOGERROR)
+            self.send(make_result_message(req_id, False, str(exc)))
+
+    def handle_message(self, message):
+        kind = message.get("type")
+        if kind == "auth_ok":
+            self.authenticated = True
+            log("iPhone Remote Bridge authentication accepted")
+        elif kind == "auth_error":
+            self.authenticated = False
+            raise BridgeProtocolError("iPhone bridge authentication failed: %s" % message.get("message", "auth_error"))
+        elif kind == "command":
+            self.handle_command(message)
+        elif kind == "ping":
+            self.send({"type": "pong", "id": message.get("id")})
+        else:
+            self.send(make_error_message(message.get("id"), "Unknown message type: %s" % kind, "unknown_type"))
+
+    def run(self):
+        self.connect()
+        next_telemetry = time.time() + max(5, int(self.cfg.get("telemetry_interval_seconds") or 30))
+        while not self.monitor.abortRequested():
+            if time.time() >= next_telemetry:
+                try:
+                    self.send(iphone_telemetry_payload())
+                except Exception as exc:
+                    log("iPhone bridge telemetry error: %s" % exc, xbmc.LOGWARNING)
+                next_telemetry = time.time() + max(5, int(self.cfg.get("telemetry_interval_seconds") or 30))
+            try:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise ProtocolError("iPhone bridge socket closed")
+                self.buffer += chunk
+                messages, self.buffer = extract_json_lines(self.buffer)
+                for message in messages:
+                    self.handle_message(message)
+            except socket.timeout:
+                continue
+
+
+def iphone_bridge_loop(monitor, cfg):
+    attempt = 0
+    client = None
+    while not monitor.abortRequested():
+        if not cfg.get("enable_iphone_bridge"):
+            return
+        client = IPhoneBridgeClient(cfg, monitor)
+        try:
+            client.run()
+            attempt = 0
+        except Exception as exc:
+            log("iPhone bridge loop error: %s" % exc, xbmc.LOGWARNING)
+        finally:
+            client.close()
+        attempt += 1
+        delay = min(cfg["iphone_bridge_reconnect_max_seconds"], cfg["iphone_bridge_reconnect_min_seconds"] * (2 ** min(attempt, 5)))
+        delay += random.randint(0, max(1, delay // 4))
+        log("iPhone bridge disconnected. Reconnecting in %s seconds." % delay, xbmc.LOGWARNING)
+        monitor.waitForAbort(delay)
 
 
 def dispatch(ws, msg, cfg):
@@ -488,8 +674,13 @@ def dispatch(ws, msg, cfg):
 def service_loop():
     monitor = xbmc.Monitor()
     attempt = 0
+    iphone_thread = None
     while not monitor.abortRequested():
         cfg = config()
+        if cfg["enable_iphone_bridge"] and cfg["iphone_bridge_host"] and (iphone_thread is None or not iphone_thread.is_alive()):
+            iphone_thread = threading.Thread(target=iphone_bridge_loop, args=(monitor, cfg))
+            iphone_thread.daemon = True
+            iphone_thread.start()
         if not cfg["auth_token"]:
             log("No auth token configured. Connecting without bridge authentication.", xbmc.LOGWARNING)
         ws = None
