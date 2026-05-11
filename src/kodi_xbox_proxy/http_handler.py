@@ -6,6 +6,7 @@ import gzip
 import json
 import mimetypes
 import os
+import re
 import threading
 import time
 import uuid
@@ -345,7 +346,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if path in ("repo/kodi-action", "repo/kodi-action/"):
             body = self._json_body()
             action = body.get("action", "refresh_repos")
-            self.handle_kodi_management_action(action)
+            self.handle_kodi_management_action(action, body)
             return
 
         if path in ("command", "command/"):
@@ -398,23 +399,30 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         }
         self.send_json(200, data)
 
-    def handle_kodi_management_action(self, action):
+    def handle_kodi_management_action(self, action, body=None):
+        body = body or {}
         allowed = {
             "refresh_repos",
             "install_addon",
             "update_addon",
             "open_addon_browser",
             "open_sources",
+            "install_zip_url",
         }
         if action not in allowed:
             self.send_json(400, {"ok": False, "error": f"Unsupported action: {action}"})
             return
+        addon_id = body.get("addon_id") or repo_manager.ADDON_ID
+        if not re.match(r"^[A-Za-z0-9_.-]+$", str(addon_id)):
+            self.send_json(400, {"ok": False, "error": "Invalid addon_id"})
+            return
         response = self.roundtrip_to_addon({
             "type": "management",
             "action": action,
-            "addon_id": repo_manager.ADDON_ID,
-            "repository_id": repo_manager.REPOSITORY_ID,
-            "source_url": repo_manager.GH_PAGES_URL,
+            "addon_id": addon_id,
+            "repository_id": body.get("repository_id") or repo_manager.REPOSITORY_ID,
+            "source_url": body.get("source_url") or repo_manager.GH_PAGES_URL,
+            "zip_url": body.get("zip_url") or "",
         }, timeout=ADDON_REQUEST_TIMEOUT)
         if response is None:
             return

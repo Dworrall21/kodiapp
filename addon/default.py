@@ -22,6 +22,7 @@ import sys
 import time
 import traceback
 import urllib.request
+import zipfile
 import zlib
 
 import xbmc
@@ -311,6 +312,7 @@ def handle_management(ws, data, cfg):
     req_id = data.get("id", "unknown")
     action = data.get("action", "")
     addon_id = data.get("addon_id", ADDON_ID)
+    zip_url = data.get("zip_url", "")
     allowed = {
         "refresh_repos": ["UpdateAddonRepos"],
         "install_addon": ["InstallAddon(%s)" % addon_id],
@@ -321,6 +323,12 @@ def handle_management(ws, data, cfg):
     try:
         if not cfg["enable_management_rpc"]:
             raise ValueError("Management RPC is disabled")
+        if action == "install_zip_url":
+            result = install_zip_url(zip_url)
+            xbmc.executebuiltin("UpdateLocalAddons")
+            xbmc.executebuiltin("UpdateAddonRepos")
+            ws.send_json({"type": "management_result", "id": req_id, "status": 200, "body": {"ok": True, "action": action, "result": result}})
+            return
         builtins = allowed.get(action)
         if not builtins:
             raise ValueError("Unsupported management action: %s" % action)
@@ -332,6 +340,74 @@ def handle_management(ws, data, cfg):
     except Exception as exc:
         log("Management command error: %s" % exc, xbmc.LOGERROR)
         ws.send_json({"type": "management_result", "id": req_id, "status": 500, "body": {"ok": False, "action": action, "error": str(exc)}})
+
+
+def _safe_member_path(root, member):
+    path = os.path.abspath(os.path.join(root, member))
+    root_abs = os.path.abspath(root)
+    if path != root_abs and not path.startswith(root_abs + os.sep):
+        raise ValueError("Unsafe zip path: %s" % member)
+    return path
+
+
+def install_zip_url(url):
+    """Install a Kodi add-on zip from a trusted HTTPS URL.
+
+    This intentionally only accepts HTTPS URLs from explicit Kodi add-on hosts
+    used by this project workflow. It extracts to special://home/addons and then
+    asks Kodi to rescan local add-ons.
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError("Missing zip_url")
+    allowed_prefixes = (
+        "https://kodifitzwell.github.io/repo/",
+        "https://raw.githubusercontent.com/O10X/Main/",
+        "https://github.com/O10X/Main/raw/",
+    )
+    if not url.startswith(allowed_prefixes):
+        raise ValueError("zip_url host is not allowlisted")
+    if not url.lower().split("?", 1)[0].endswith(".zip"):
+        raise ValueError("zip_url must point to a .zip file")
+
+    packages_dir = xbmcvfs.translatePath("special://home/addons/packages")
+    addons_dir = xbmcvfs.translatePath("special://home/addons")
+    if not os.path.isdir(packages_dir):
+        os.makedirs(packages_dir)
+    filename = url.rstrip("/").split("/")[-1].split("?", 1)[0]
+    local_zip = os.path.join(packages_dir, filename)
+
+    req = urllib.request.Request(url, headers={"User-Agent": "Kodi Xbox Proxy/%s" % ADDON_VERSION})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        payload = resp.read()
+    with open(local_zip, "wb") as handle:
+        handle.write(payload)
+
+    with zipfile.ZipFile(local_zip) as zf:
+        names = [name for name in zf.namelist() if name and not name.endswith("/")]
+        if not names:
+            raise ValueError("Zip is empty")
+        roots = sorted(set(name.split("/", 1)[0] for name in names if "/" in name))
+        if len(roots) != 1:
+            raise ValueError("Zip must contain exactly one top-level add-on folder")
+        root = roots[0]
+        if (root + "/addon.xml") not in names:
+            raise ValueError("Zip root does not contain addon.xml")
+        target_root = os.path.join(addons_dir, root)
+        if not os.path.isdir(target_root):
+            os.makedirs(target_root)
+        for member in zf.infolist():
+            target = _safe_member_path(addons_dir, member.filename)
+            if member.is_dir():
+                if not os.path.isdir(target):
+                    os.makedirs(target)
+                continue
+            parent = os.path.dirname(target)
+            if not os.path.isdir(parent):
+                os.makedirs(parent)
+            with zf.open(member) as src, open(target, "wb") as dst:
+                dst.write(src.read())
+
+    return {"url": url, "zip_path": local_zip, "addon_id": root, "bytes": len(payload)}
 
 
 def read_logs(lines):
