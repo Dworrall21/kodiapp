@@ -20,9 +20,9 @@ GH_PAGES_URL = "https://dworrall21.github.io/kodiapp/"
 
 ADDON_DIR = PROJECT_ROOT / "addon"
 ADDON_XML = ADDON_DIR / "addon.xml"
-ADDONS_XML = PROJECT_ROOT / "addons.xml"
 ADDON_ZIP = PROJECT_ROOT / "addon.zip"
 REPO_STATIC = PROJECT_ROOT / "repo_static"
+REPO_ADDONS_XML = REPO_STATIC / "addons.xml"
 REPO_ADDON_DIR = REPO_STATIC / ADDON_ID
 GH_PAGES_WORKTREE = Path("/tmp/kodiapp-gh-pages-wt")
 
@@ -52,7 +52,7 @@ def addon_version() -> str:
     return root.attrib.get("version", "unknown")
 
 
-def repo_version(addons_xml: Path = ADDONS_XML) -> str | None:
+def repo_version(addons_xml: Path = REPO_ADDONS_XML) -> str | None:
     if not addons_xml.exists():
         return None
     root = ET.parse(addons_xml).getroot()
@@ -74,7 +74,15 @@ def latest_repo_zip() -> dict:
             "path": str(path),
             "size": path.stat().st_size,
         })
-    items.sort(key=lambda x: x["name"], reverse=True)
+
+    def version_key(item: dict) -> tuple:
+        parts = re.split(r"[.+-]", item["version"])
+        key = []
+        for part in parts:
+            key.append((0, int(part)) if part.isdigit() else (1, part))
+        return tuple(key)
+
+    items.sort(key=version_key, reverse=True)
     return items[0] if items else {}
 
 
@@ -88,8 +96,8 @@ def status() -> dict:
         "gh_pages_url": GH_PAGES_URL,
         "source_candidates": [f"http://{lan_ip}:8080/repo/", GH_PAGES_URL],
         "source_addon_version": addon_version(),
-        "local_metadata_version": repo_version(ADDONS_XML),
-        "static_metadata_version": repo_version(REPO_STATIC / "addons.xml"),
+        "local_metadata_version": repo_version(REPO_ADDONS_XML),
+        "static_metadata_version": repo_version(REPO_ADDONS_XML),
         "latest_static_zip": latest_repo_zip(),
         "addon_zip_exists": ADDON_ZIP.exists(),
         "addon_zip_size": ADDON_ZIP.stat().st_size if ADDON_ZIP.exists() else 0,
@@ -116,21 +124,20 @@ def set_version(version: str) -> dict:
 
 def update_addons_xml(version: str | None = None) -> None:
     version = version or addon_version()
-    for path in (ADDONS_XML, REPO_STATIC / "addons.xml"):
-        if not path.exists():
-            continue
-        text = _read_text(path)
-        text = re.sub(
-            rf'(<addon id="{re.escape(ADDON_ID)}"[^>]*\bversion=")[^"]+("[^>]*>)',
-            rf'\g<1>{version}\2',
-            text,
-            count=1,
-        )
-        # Keep dependencies minimal and aligned with addon/addon.xml. The proxy add-on
-        # only needs xbmc.python; stale script.module.six imports previously broke updates.
-        text = re.sub(r'\n\s*<import addon="script\.module\.six"[^>]*/>', "", text)
-        _write_text(path, text)
-        write_md5(path)
+    if not REPO_ADDONS_XML.exists():
+        return
+    text = _read_text(REPO_ADDONS_XML)
+    text = re.sub(
+        rf'(<addon id="{re.escape(ADDON_ID)}"[^>]*\bversion=")[^"]+("[^>]*>)',
+        rf'\g<1>{version}\2',
+        text,
+        count=1,
+    )
+    # Keep dependencies minimal and aligned with addon/addon.xml. The proxy add-on
+    # only needs xbmc.python; stale script.module.six imports previously broke updates.
+    text = re.sub(r'\n\s*<import addon="script\.module\.six"[^>]*/>', "", text)
+    _write_text(REPO_ADDONS_XML, text)
+    write_md5(REPO_ADDONS_XML)
 
 
 def write_md5(addons_xml: Path) -> None:

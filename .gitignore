@@ -22,3 +22,23 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local secrets/config
+.env
+.env.*
+!.env.example
+
+# Temporary package/build artifacts
+build_pkg/
+*.tmp
+
+# Apple/Xcode local state
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+.swiftpm/
+.build/
+
+# SideStore/AltStore local artifacts
+*.ipa
