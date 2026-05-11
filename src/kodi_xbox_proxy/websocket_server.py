@@ -63,7 +63,7 @@ async def addon_handler(websocket) -> None:
                     state.addon_info = data.get("info") or {}
                 info = state.addon_info or {}
                 kodi_ver = info.get("version") or "?"
-                addon_ver = info.get("addon_version") or "1.0.4"
+                addon_ver = info.get("addon_version") or "?"
                 platform = info.get("name") or info.get("platform") or "?"
                 print(f"[proxy] Add-on ready — addon v{addon_ver}, Kodi {kodi_ver} ({platform})")
                 state.broadcast_event("addon_ready", info)

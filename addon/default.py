@@ -473,8 +473,10 @@ class ProxyService:
         self._reconnect_delay = 5
         log("Connected to proxy server")
 
-        # Send hello with Kodi info
+        # Send hello with Kodi info and add-on version
         info = get_kodi_info()
+        info["addon_version"] = "1.0.5"
+        info["protocol_version"] = 2
         ws.send(json.dumps({"type": "connected", "info": info}))
 
         # Start Kodi event monitor
