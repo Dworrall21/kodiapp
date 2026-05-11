@@ -33,6 +33,7 @@ jobs:
 
       - name: Build device app (Release / iphoneos)
         run: |
+          mkdir -p build
           set -o pipefail
           xcodebuild \
             -project iphone/KodiXboxRemote/KodiXboxRemote.xcodeproj \
