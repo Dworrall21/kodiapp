@@ -29,6 +29,18 @@ HOP_HEADERS = {
     "upgrade",
 }
 
+# Kodi's Chorus web UI uses absolute /jsonrpc calls from inside the iframe.
+# Browser reloads can also send conditional cache headers; urllib in the add-on
+# raises 304 responses as errors, and the iframe may not have a useful cached
+# body in a different tab. Strip conditionals so the tunnel returns fresh bodies.
+CONDITIONAL_REQUEST_HEADERS = {
+    "if-match",
+    "if-none-match",
+    "if-modified-since",
+    "if-unmodified-since",
+    "if-range",
+}
+
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for dashboard, API, repo, and Kodi proxy."""
@@ -154,6 +166,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/_kodi_"):
             self.proxy_to_kodi("GET")
             return
+        if path == "/jsonrpc":
+            self.proxy_to_kodi("GET")
+            return
 
         self.send_json(404, {"error": "Not found"})
 
@@ -162,6 +177,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.handle_api(self.path[5:])
             return
         if self.path.split("?", 1)[0].startswith("/_kodi_"):
+            self.proxy_to_kodi("POST")
+            return
+        if self.path.split("?", 1)[0] == "/jsonrpc":
             self.proxy_to_kodi("POST")
             return
         self.send_json(404, {"error": "Not found"})
@@ -308,6 +326,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             key: self.headers[key]
             for key in self.headers
             if key.lower() not in HOP_HEADERS
+            and key.lower() not in CONDITIONAL_REQUEST_HEADERS
         }
 
         msg = {
@@ -344,6 +363,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if key.lower() not in HOP_HEADERS and key.lower() != "content-length":
                 self.send_header(key, str(val))
         self.send_header("Content-Length", str(len(resp_body)))
+        if self.path.split("?", 1)[0].startswith(("/_kodi_", "/jsonrpc")):
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(resp_body)
 

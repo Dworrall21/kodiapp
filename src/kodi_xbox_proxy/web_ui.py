@@ -105,6 +105,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
         <div class="info-item"><label>Memory Total</label><span id="statMemTotal">—</span></div>
         <div class="info-item"><label>Uptime</label><span id="statUptime">—</span></div>
         <div class="info-item"><label>Temperature</label><span id="statTemp">—</span></div>
+        <div class="info-item"><label>Resolution</label><span id="statResolution">—</span></div>
         <div class="info-item"><label>Volume</label><span id="statVol">—</span></div>
       </div>
     </div>
@@ -269,9 +270,10 @@ function handleRealtimeEvent(event) {
   document.getElementById('eventCount').textContent = eventCount;
   const type = event.type || '';
   const data = event.data || {};
-  if (type === 'stats_update' || type.startsWith('playback_')) {
+  if (type === 'stats_update' || type === 'telemetry' || type.startsWith('playback_')) {
+    const stats = data.stats || data;
     if (data.now_playing) updateNowPlaying(data.now_playing);
-    if (data.stats) updateStats(data.stats);
+    if (stats) updateStats(stats);
     if (data.volume) updateVolume(data.volume);
   }
   if (type === 'volume_changed' && data.volume !== undefined) {
@@ -305,11 +307,12 @@ function updateNowPlaying(np) {
 }
 
 function updateStats(stats) {
-  if (stats.cpu) document.getElementById('statCpu').textContent = stats.cpu;
-  if (stats.memory_free) document.getElementById('statMemFree').textContent = stats.memory_free;
-  if (stats.memory_total) document.getElementById('statMemTotal').textContent = stats.memory_total;
+  if (stats.cpu || stats.cpu_usage) document.getElementById('statCpu').textContent = stats.cpu || stats.cpu_usage;
+  if (stats.memory_free || stats.free_memory) document.getElementById('statMemFree').textContent = stats.memory_free || stats.free_memory;
+  if (stats.memory_total || stats.total_memory) document.getElementById('statMemTotal').textContent = stats.memory_total || stats.total_memory;
   if (stats.uptime) document.getElementById('statUptime').textContent = stats.uptime;
   if (stats.temperature) document.getElementById('statTemp').textContent = stats.temperature;
+  if (stats.screen_resolution) document.getElementById('statResolution').textContent = stats.screen_resolution;
 }
 
 function updateVolume(vol) {
