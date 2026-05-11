@@ -1,0 +1,82 @@
+name: iOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - 'addon/**'
+      - 'iphone/**'
+      - 'tests/**'
+      - '.github/workflows/ios-build.yml'
+
+jobs:
+  build-ios:
+    name: Build KodiXboxRemote
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Show tool versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          python3 --version
+
+      - name: Run Python bridge/static tests
+        run: |
+          python3 -m unittest tests/test_iphone_bridge_protocol.py tests/test_iphone_swift_static.py
+          python3 -m py_compile addon/default.py addon/iphone_bridge.py
+
+      - name: Build simulator app
+        run: |
+          mkdir -p build
+          set -o pipefail
+          xcodebuild \
+            -project iphone/KodiXboxRemote/KodiXboxRemote.xcodeproj \
+            -scheme KodiXboxRemote \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedDataSimulator \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build/xcodebuild-simulator.log
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project iphone/KodiXboxRemote/KodiXboxRemote.xcodeproj \
+            -scheme KodiXboxRemote \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedDataDevice \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build | tee build/xcodebuild-device.log
+
+      - name: Package unsigned IPA
+        run: |
+          chmod +x iphone/KodiXboxRemote/scripts/package-unsigned-ipa.sh
+          APP_PATH="build/DerivedDataDevice/Build/Products/Release-iphoneos/KodiXboxRemote.app"
+          iphone/KodiXboxRemote/scripts/package-unsigned-ipa.sh "$APP_PATH" "build/KodiXboxRemote-unsigned.ipa"
+          unzip -l build/KodiXboxRemote-unsigned.ipa | sed -n '1,80p'
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KodiXboxRemote-unsigned-ipa
+          path: build/KodiXboxRemote-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs
+          path: |
+            build/*.log
+          if-no-files-found: ignore

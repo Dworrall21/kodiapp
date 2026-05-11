@@ -45,8 +45,20 @@ This Linux environment cannot generate or validate an `.xcodeproj` with Xcode. T
    - iPhone Bridge Port: displayed port, default 9192
    - iPhone Bridge Token: same token as the app, or blank on both sides
 
+## No-Mac sideloading path
+
+A real Xcode project and GitHub Actions workflow are now part of this repo so the app can be compiled on a cloud macOS runner.
+
+See `SIDELOADING.md` for the SideStore/AltStore flow:
+
+1. Run/download the GitHub Actions `iOS Build` artifact.
+2. Extract `KodiXboxRemote-unsigned.ipa`.
+3. Install/sign it with SideStore or AltStore.
+4. Launch the app, grant Local Network permission, and tap Start Listening.
+
 ## Notes
 
 - The app must stay foregrounded for reliable listener behavior.
 - iOS may prompt for Local Network permission on first run.
 - If the add-on does not connect, confirm the iPhone and Xbox are on the same LAN and the iPhone has Local Network permission enabled in iOS Settings.
+- The CI-produced IPA is initially unsigned. SideStore/AltStore may sign it; if they reject it, capture the exact error and add a signing-specific follow-up.

@@ -2,7 +2,8 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "iphone" / "KodiXboxRemote" / "KodiXboxRemote"
+IPHONE_ROOT = ROOT / "iphone" / "KodiXboxRemote"
+APP = IPHONE_ROOT / "KodiXboxRemote"
 
 
 class IPhoneSwiftStaticTests(unittest.TestCase):
@@ -55,6 +56,30 @@ class IPhoneSwiftStaticTests(unittest.TestCase):
     def test_no_duplicate_connectionstatus_color_extension(self):
         combined = "\n".join(p.read_text() for p in APP.rglob("*.swift"))
         self.assertEqual(combined.count("var color: Color"), 1)
+
+    def test_xcode_project_and_ci_workflow_reference_app_files(self):
+        project = IPHONE_ROOT / "KodiXboxRemote.xcodeproj" / "project.pbxproj"
+        scheme = IPHONE_ROOT / "KodiXboxRemote.xcodeproj" / "xcshareddata" / "xcschemes" / "KodiXboxRemote.xcscheme"
+        workflow = ROOT / ".github" / "workflows" / "ios-build.yml"
+        self.assertTrue(project.exists())
+        self.assertTrue(scheme.exists())
+        self.assertTrue(workflow.exists())
+        project_text = project.read_text()
+        workflow_text = workflow.read_text()
+        for name in [
+            "KodiXboxRemoteApp.swift",
+            "BridgeMessage.swift",
+            "BridgeServer.swift",
+            "BridgeConnection.swift",
+            "RemoteViewModel.swift",
+            "RemoteView.swift",
+            "ConnectionStatusView.swift",
+            "Resources/Info.plist",
+        ]:
+            self.assertIn(name, project_text)
+        self.assertIn("xcodebuild", workflow_text)
+        self.assertIn("KodiXboxRemote-unsigned.ipa", workflow_text)
+        self.assertIn("CODE_SIGNING_ALLOWED=NO", workflow_text)
 
 
 if __name__ == "__main__":
