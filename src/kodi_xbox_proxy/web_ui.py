@@ -349,19 +349,33 @@ function clearEvents() {
 async function fetchLogs(count) {
   try {
     const d = await api('/logs?lines=' + count);
-    if (d.lines) {
-      const viewer = document.getElementById('logViewer');
-      let html = d.lines.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const viewer = document.getElementById('logViewer');
+    const meta = document.getElementById('logMeta');
+
+    if (d.error) {
+      viewer.textContent = 'Error: ' + d.error;
+      meta.textContent = d.path ? `Path checked: ${d.path}` : '';
+      showToast('Failed to fetch logs', 'error');
+      return;
+    }
+
+    if (Array.isArray(d.lines) || typeof d.lines === 'string') {
+      const text = Array.isArray(d.lines) ? d.lines.join('\n') : d.lines;
+      let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       html = html.replace(/\b(ERROR)\b/g, '<span class="error">$1</span>');
       html = html.replace(/\b(WARN(?:ING)?)\b/g, '<span class="warn">$1</span>');
       html = html.replace(/\b(INFO|NOTICE)\b/g, '<span class="info">$1</span>');
-      viewer.innerHTML = html;
+      viewer.innerHTML = html || '(log is empty)';
       viewer.scrollTop = viewer.scrollHeight;
-      document.getElementById('logMeta').textContent = `Showing last ${count} lines | Total: ${d.total_lines || '?'} lines | Path: ${d.path || 'unknown'}`;
+      const shown = Array.isArray(d.lines) ? d.lines.length : text.split('\n').length;
+      const capped = d.truncated_to || count;
+      meta.textContent = `Showing ${shown} line(s), capped at ${capped} | Path: ${d.path || 'unknown'}`;
       showToast('Logs fetched', 'success');
-    } else if (d.error) {
-      document.getElementById('logViewer').textContent = 'Error: ' + d.error;
+      return;
     }
+
+    viewer.textContent = 'No log lines returned. Raw response:\n' + JSON.stringify(d, null, 2);
+    meta.textContent = d.path ? `Path: ${d.path}` : '';
   } catch (e) {
     showToast('Failed to fetch logs: ' + e, 'error');
   }
