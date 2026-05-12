@@ -1,35 +1,38 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <addons>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.14" provider-name="Dworrall21">
-    <requires>
-        <import addon="xbmc.python" version="3.0.0"/>
-    </requires>
-    <extension point="xbmc.service" library="default.py" start="startup"/>
-    <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">Web Interface Proxy for Xbox</summary>
-        <description lang="en_GB">Proxies Kodi's web interface through an outbound WebSocket connection with zlib compression. Bypasses UWP inbound port restrictions on Xbox Retail Mode.</description>
-        <platform>all</platform>
-        <license>MIT</license>
-        <website>https://github.com/Dworrall21/kodiapp</website>
-        <source>https://github.com/Dworrall21/kodiapp</source>
-    </extension>
-</addon>
-<addon id="plugin.video.pov" version="6.05.08" name="POV" provider-name="kodifitzwell">
-    <requires>
-        <import addon="xbmc.python" version="3.0.0"/>
-        <import addon="script.module.requests"/>
-    </requires>
-    <extension point="xbmc.python.pluginsource" library="resources/lib/router.py">
-        <provides>video</provides>
-    </extension>
-    <extension point="xbmc.service" library="resources/lib/service.py"/>
-    <extension point="xbmc.addon.metadata">
-        <reuselanguageinvoker>true</reuselanguageinvoker>
-        <license>GNU GENERAL PUBLIC LICENSE. Version 3, 29 June 2007</license>
-        <summary>What you like to watch.</summary>
-        <description lang="en">This is a Non-profit resource, organized solely for educational purposes which is protected under the Fair-Use doctrine of the Copyright Act, Specifically section 107, which does promote freedom of expression, by permitting the unlicensed use of copyright-protected works.</description>
-        <news>INFO: For latest changes see Changelog within add-on.</news>
-        <assets><icon>pov.png</icon><fanart>pov_fanart.png</fanart></assets>
-    </extension>
-</addon>
+	<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.14" provider-name="Dworrall21">
+		<requires>
+			<import addon="xbmc.python" version="3.0.0" />
+		</requires>
+		<extension point="xbmc.service" library="default.py" start="startup" />
+		<extension point="xbmc.addon.metadata">
+			<summary lang="en_GB">Web Interface Proxy for Xbox</summary>
+			<description lang="en_GB">Proxies Kodi's web interface through an outbound WebSocket connection with zlib compression. Bypasses UWP inbound port restrictions on Xbox Retail Mode.</description>
+			<platform>all</platform>
+			<license>MIT</license>
+			<website>https://github.com/Dworrall21/kodiapp</website>
+			<source>https://github.com/Dworrall21/kodiapp</source>
+		</extension>
+	</addon>
+	<addon id="plugin.video.pov" version="6.05.08" name="POV" provider-name="kodifitzwell">
+		<requires>
+			<import addon="xbmc.python" version="3.0.0" />
+			<import addon="script.module.requests" />
+		</requires>
+		<extension point="xbmc.python.pluginsource" library="resources/lib/router.py">
+			<provides>video</provides>
+		</extension>
+		<extension point="xbmc.service" library="resources/lib/service.py" />
+		<extension point="xbmc.addon.metadata">
+			<reuselanguageinvoker>true</reuselanguageinvoker>
+			<license>GNU GENERAL PUBLIC LICENSE. Version 3, 29 June 2007</license>
+			<summary>What you like to watch.</summary>
+			<description lang="en">This is a Non-profit resource, organized solely for educational purposes which is protected under the Fair-Use doctrine of the Copyright Act, Specifically section 107, which does promote freedom of expression, by permitting the unlicensed use of copyright-protected works.</description>
+			<news>INFO: For latest changes see Changelog within add-on.</news>
+			<assets>
+				<icon>pov.png</icon>
+				<fanart>pov_fanart.png</fanart>
+			</assets>
+		</extension>
+	</addon>
 </addons>
