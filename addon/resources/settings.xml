@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='utf-8'?>
+<settings>
+    <category label="Bridge">
+        <setting id="bridge_host" type="text" label="Bridge Host" default="10.0.0.4" />
+        <setting id="bridge_port" type="number" label="Bridge Port" default="9191" />
+        <setting id="bridge_path" type="text" label="Bridge Path" default="/" />
+        <setting id="auth_token" type="text" label="Shared Auth Token" default="" />
+        <setting id="use_tls" type="bool" label="Use TLS" default="false" />
+        <setting id="verify_tls" type="bool" label="Verify TLS Certificate" default="true" />
+    </category>
+    <category label="Kodi Local HTTP">
+        <setting id="kodi_host" type="text" label="Kodi Host" default="127.0.0.1" />
+        <setting id="kodi_port" type="number" label="Kodi Web Server Port" default="8080" />
+        <setting id="enable_http_proxy" type="bool" label="Enable Web UI HTTP Proxy" default="true" />
+        <setting id="enable_management_rpc" type="bool" label="Enable Management JSON-RPC" default="true" />
+    </category>
+    <category label="iPhone Remote Bridge">
+        <setting id="enable_iphone_bridge" type="bool" label="Enable iPhone Remote Bridge" default="false" />
+        <setting id="iphone_bridge_host" type="text" label="iPhone Bridge Host" default="" />
+        <setting id="iphone_bridge_port" type="number" label="iPhone Bridge Port" default="9192" />
+        <setting id="iphone_bridge_token" type="text" label="iPhone Bridge Token" default="" />
+        <setting id="iphone_bridge_reconnect_min_seconds" type="number" label="iPhone Bridge Minimum Reconnect Delay Seconds" default="3" />
+        <setting id="iphone_bridge_reconnect_max_seconds" type="number" label="iPhone Bridge Maximum Reconnect Delay Seconds" default="30" />
+    </category>
+    <category label="Diagnostics">
+        <setting id="enable_log_tail" type="bool" label="Enable Log Tail Requests" default="true" />
+        <setting id="telemetry_interval_seconds" type="number" label="Telemetry Interval Seconds" default="30" />
+        <setting id="reconnect_min_seconds" type="number" label="Minimum Reconnect Delay Seconds" default="5" />
+        <setting id="reconnect_max_seconds" type="number" label="Maximum Reconnect Delay Seconds" default="60" />
+    </category>
+</settings>

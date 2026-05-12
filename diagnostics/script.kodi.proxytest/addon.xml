@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="script.kodi.proxytest" name="Kodi Proxy Install Test" version="0.0.1" provider-name="Dworrall21">
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Kodi proxy install diagnostic</summary>
+        <description lang="en_GB">Ultra-minimal metadata-only diagnostic package. No Python, no settings, no service startup.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://github.com/Dworrall21/kodiapp</website>
+        <source>https://github.com/Dworrall21/kodiapp</source>
+    </extension>
+</addon>

@@ -1,0 +1,265 @@
+import Combine
+import Foundation
+import SwiftUI
+
+@MainActor
+final class RemoteViewModel: ObservableObject {
+    @Published var connectionStatus: ConnectionStatus = .disconnected
+    @Published var localIP: String = "0.0.0.0"
+    @Published var localPortString: String = "9192"
+    @Published var pairingToken: String = ""
+    @Published var isListening: Bool = false
+    @Published var telemetry: TelemetryMessage?
+    @Published var addonSummary: String = "No Xbox add-on connected"
+    @Published var lastResult: String = ""
+    @Published var lastError: String?
+    @Published var showError = false
+    @Published var debugEntries: [DebugLogEntry] = []
+    @Published var debugLoggingEnabled = true
+
+    private let bridgeServer = BridgeServer(port: 9192)
+    private var activeConnection: BridgeConnection?
+    private var commandCounter = 0
+    private var cancellables = Set<AnyCancellable>()
+
+    private enum Keys {
+        static let port = "kodi.bridge.port"
+        static let token = "kodi.bridge.token"
+    }
+
+    var localPort: UInt16 { UInt16(localPortString) ?? 9192 }
+    var canSendCommands: Bool { connectionStatus == .connected || connectionStatus == .authenticated }
+
+    init() {
+        // Restore persisted settings
+        if let savedPort = UserDefaults.standard.string(forKey: Keys.port), !savedPort.isEmpty {
+            localPortString = savedPort
+        }
+        if let savedToken = UserDefaults.standard.string(forKey: Keys.token) {
+            pairingToken = savedToken
+        }
+
+        localIP = bridgeServer.localAddress
+        bindServer()
+        bindSettingsPersistence()
+    }
+
+    /// Persist port and token whenever they change.
+    private func bindSettingsPersistence() {
+        $localPortString
+            .dropFirst()
+            .sink { _ in
+                UserDefaults.standard.set(self.localPortString, forKey: Keys.port)
+            }
+            .store(in: &cancellables)
+
+        $pairingToken
+            .dropFirst()
+            .sink { _ in
+                UserDefaults.standard.set(self.pairingToken, forKey: Keys.token)
+            }
+            .store(in: &cancellables)
+    }
+
+    func toggleListening() {
+        // Persist current settings before toggling
+        UserDefaults.standard.set(localPortString, forKey: Keys.port)
+        UserDefaults.standard.set(pairingToken, forKey: Keys.token)
+
+        if isListening {
+            bridgeServer.stopListening()
+        } else {
+            bridgeServer.startListening(port: localPort)
+        }
+    }
+
+    func sendCommand(_ method: String, params: [String: Any] = [:]) {
+        guard canSendCommands, let connection = activeConnection else {
+            setError("Not connected to Xbox add-on")
+            return
+        }
+        let command = CommandMessage(id: nextCommandID(), method: method, params: params)
+        logDebug("Sending \(method)")
+        connection.send(command: command)
+    }
+
+    func sendText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        sendCommand("Input.SendText", params: ["text": trimmed, "done": false])
+    }
+
+    func clearDebugLog() {
+        debugEntries.removeAll()
+    }
+
+    func logDebug(_ message: String) {
+        guard debugLoggingEnabled else { return }
+        debugEntries.insert(DebugLogEntry(message: message), at: 0)
+        if debugEntries.count > 200 {
+            debugEntries.removeLast(debugEntries.count - 200)
+        }
+    }
+
+    private func bindServer() {
+        bridgeServer.$isListening
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] listening in
+                self?.isListening = listening
+                if listening && self?.activeConnection == nil {
+                    self?.connectionStatus = .listening
+                }
+                if !listening {
+                    self?.connectionStatus = .disconnected
+                    self?.activeConnection = nil
+                }
+            }
+            .store(in: &cancellables)
+
+        bridgeServer.$localAddress
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$localIP)
+
+        bridgeServer.$lastError
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] error in
+                if let error { self?.setError(error) }
+            }
+            .store(in: &cancellables)
+
+        bridgeServer.onDebugLog = { [weak self] message in
+            self?.logDebug(message)
+        }
+
+        bridgeServer.onConnectionEstablished = { [weak self] connection in
+            self?.attach(connection)
+        }
+        bridgeServer.onConnectionLost = { [weak self] in
+            self?.activeConnection = nil
+            self?.telemetry = nil
+            self?.addonSummary = "No Xbox add-on connected"
+            self?.connectionStatus = self?.isListening == true ? .listening : .disconnected
+        }
+    }
+
+    private func attach(_ connection: BridgeConnection) {
+        activeConnection = connection
+        connectionStatus = .waitingForHello
+        addonSummary = "Xbox add-on connected; waiting for hello"
+        logDebug("Attached Xbox add-on connection from \(connection.endpointDescription)")
+
+        connection.onDebugLog = { [weak self] message in
+            self?.logDebug(message)
+        }
+        connection.onMessageReceived = { [weak self, weak connection] message in
+            guard let self, let connection, self.activeConnection === connection else { return }
+            self.handle(message, from: connection)
+        }
+        connection.onError = { [weak self] error in self?.setError(error) }
+        let previousStateHandler = connection.onConnectionStateChanged
+        connection.onConnectionStateChanged = { [weak self, weak connection] connected in
+            previousStateHandler?(connected)
+            guard let self, let connection else { return }
+            if !connected && self.activeConnection === connection {
+                self.activeConnection = nil
+                self.telemetry = nil
+                self.connectionStatus = self.isListening ? .listening : .disconnected
+            }
+        }
+    }
+
+    private func handle(_ message: BridgeMessage, from connection: BridgeConnection) {
+        switch message {
+        case .hello(let hello):
+            logDebug("Received hello from \(hello.addonID) \(hello.addonVersion)")
+            addonSummary = "\(hello.kodiName) \(hello.kodiVersion) via \(hello.addonID) \(hello.addonVersion)"
+            if pairingToken.isEmpty {
+                connection.sendAuthOK()
+                connectionStatus = .authenticated
+            } else {
+                connectionStatus = .authenticating
+            }
+        case .auth(let auth):
+            if pairingToken.isEmpty || auth.token == pairingToken {
+                connection.sendAuthOK()
+                connectionStatus = .authenticated
+            } else {
+                connection.sendAuthError("Invalid token")
+                connectionStatus = .authFailed
+                setError("Invalid iPhone bridge token from Xbox add-on")
+            }
+        case .result(let result):
+            if result.ok {
+                lastResult = "Command \(result.id ?? "?") OK"
+                logDebug(lastResult)
+            } else {
+                lastResult = "Command \(result.id ?? "?") failed: \(result.error ?? "Unknown error")"
+                logDebug(lastResult)
+            }
+        case .error(let error):
+            setError(error.message)
+        case .telemetry(let telemetry):
+            self.telemetry = telemetry
+            logDebug("Telemetry received: volume \(telemetry.volume.map(String.init) ?? "?")")
+            if connectionStatus == .authenticated { connectionStatus = .connected }
+        case .ping(let id):
+            connection.sendPong(id: id)
+        case .authOK:
+            connectionStatus = .authenticated
+        case .authError(let message):
+            connectionStatus = .authFailed
+            setError(message ?? "Authentication failed")
+        case .pong:
+            break
+        case .command, .unknown:
+            break
+        }
+    }
+
+    private func nextCommandID() -> String {
+        commandCounter += 1
+        return String(format: "cmd-%04d", commandCounter)
+    }
+
+    private func setError(_ message: String) {
+        logDebug("Error: \(message)")
+        lastError = message
+        showError = true
+    }
+}
+
+struct DebugLogEntry: Identifiable {
+    let id = UUID()
+    let timestamp = Date()
+    let message: String
+
+    var displayTime: String {
+        Self.formatter.string(from: timestamp)
+    }
+
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+}
+
+enum ConnectionStatus: String, CaseIterable {
+    case disconnected = "Disconnected"
+    case listening = "Listening"
+    case waitingForHello = "Waiting for hello"
+    case authenticating = "Authenticating"
+    case authenticated = "Authenticated"
+    case connected = "Connected"
+    case authFailed = "Auth failed"
+
+    var color: Color {
+        switch self {
+        case .disconnected: return .gray
+        case .listening: return .blue
+        case .waitingForHello, .authenticating: return .orange
+        case .authenticated, .connected: return .green
+        case .authFailed: return .red
+        }
+    }
+}

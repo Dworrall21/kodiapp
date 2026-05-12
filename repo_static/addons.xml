@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addons>
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.10" provider-name="Dworrall21">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+    </requires>
+    <extension point="xbmc.service" library="default.py" start="startup"/>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Web Interface Proxy for Xbox</summary>
+        <description lang="en_GB">Proxies Kodi's web interface through an outbound WebSocket connection with zlib compression. Bypasses UWP inbound port restrictions on Xbox Retail Mode.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://github.com/Dworrall21/kodiapp</website>
+        <source>https://github.com/Dworrall21/kodiapp</source>
+    </extension>
+</addon>
+</addons>
