@@ -1,32 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addons>
-<addon id="script.kodi.proxytest" name="Kodi Proxy Install Test" version="0.0.1" provider-name="Dworrall21">
-    <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">Kodi proxy install diagnostic</summary>
-        <description lang="en_GB">Ultra-minimal metadata-only diagnostic package. No Python, no settings, no service startup.</description>
-        <platform>all</platform>
-        <license>MIT</license>
-        <website>https://github.com/Dworrall21/kodiapp</website>
-        <source>https://github.com/Dworrall21/kodiapp</source>
-    </extension>
-</addon>
-<addon id="script.kodi.proxyhello" name="Kodi Proxy Hello Test" version="0.0.1" provider-name="Dworrall21">
-    <requires>
-        <import addon="xbmc.python" version="3.0.0"/>
-    </requires>
-    <extension point="xbmc.python.script" library="default.py">
-        <provides>executable</provides>
-    </extension>
-    <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">Kodi proxy hello diagnostic</summary>
-        <description lang="en_GB">Canonical non-service Python script diagnostic. It should install like a normal Program add-on and only shows a notification when manually run.</description>
-        <platform>all</platform>
-        <license>MIT</license>
-        <website>https://github.com/Dworrall21/kodiapp</website>
-        <source>https://github.com/Dworrall21/kodiapp</source>
-    </extension>
-</addon>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.10" provider-name="Dworrall21">
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.11" provider-name="Dworrall21">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -38,20 +12,6 @@
         <license>MIT</license>
         <website>https://github.com/Dworrall21/kodiapp</website>
         <source>https://github.com/Dworrall21/kodiapp</source>
-    </extension>
-</addon>
-<addon id="script.module.six" name="six" version="1.16.0+matrix.1" provider-name="Dworrall21">
-    <requires>
-        <import addon="xbmc.python" version="3.0.0"/>
-    </requires>
-    <extension point="xbmc.python.module" library="lib"/>
-    <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">Python 2 and 3 compatibility utilities</summary>
-        <description lang="en_GB">six is a Python 2 and 3 compatibility library. It provides utility functions for smoothing over the differences between the Python versions with the goal of writing Python code that is compatible on both Python 2 and 3.</description>
-        <platform>all</platform>
-        <license>MIT</license>
-        <website>https://pypi.org/project/six/</website>
-        <source>https://pypi.org/project/six/</source>
     </extension>
 </addon>
 </addons>
