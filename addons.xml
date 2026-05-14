@@ -14,7 +14,7 @@
 			<source>https://github.com/Dworrall21/kodiapp</source>
 		</extension>
 	</addon>
-	<addon id="plugin.video.pov" version="6.05.14" name="POV" provider-name="kodifitzwell">
+	<addon id="plugin.video.pov" version="6.05.15" name="POV" provider-name="kodifitzwell">
 		<requires>
 			<import addon="xbmc.python" version="3.0.0" />
 			<import addon="script.module.requests" />
@@ -26,13 +26,11 @@
 		<extension point="xbmc.addon.metadata">
 			<reuselanguageinvoker>true</reuselanguageinvoker>
 			<license>GNU GENERAL PUBLIC LICENSE. Version 3, 29 June 2007</license>
-			<summary>What you like to watch.</summary>
+			<disclaimer lang="en">The author of this addon does not host any of the content which is found and has no affiliation with any of the content providers.[CR]The author is in no way affiliated with Kodi, Team Kodi, or the XBMC Foundation.</disclaimer>
+			<summary>What you like to watch.[CR]</summary>
 			<description lang="en">This is a Non-profit resource, organized solely for educational purposes which is protected under the Fair-Use doctrine of the Copyright Act, Specifically section 107, which does promote freedom of expression, by permitting the unlicensed use of copyright-protected works.</description>
 			<news>INFO: For latest changes see Changelog within add-on.</news>
-			<assets>
-				<icon>pov.png</icon>
-				<fanart>pov_fanart.png</fanart>
-			</assets>
+			<assets><icon>pov.png</icon><fanart>pov_fanart.png</fanart></assets>
 		</extension>
 	</addon>
 	<addon id="skin.arctic.zephyr.mod" version="3.0.4" name="Arctic: Zephyr - Reloaded" provider-name="jurialmunkey, beatmasterrs">
