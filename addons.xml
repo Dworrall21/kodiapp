@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addons>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.11" provider-name="Dworrall21">
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.12" provider-name="Dworrall21">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
     <extension point="xbmc.service" library="default.py" start="startup"/>
     <extension point="xbmc.addon.metadata">
         <summary lang="en_GB">Web Interface Proxy for Xbox</summary>
-        <description lang="en_GB">Proxies Kodi's web interface through an outbound WebSocket connection with zlib compression. Bypasses UWP inbound port restrictions on Xbox Retail Mode.</description>
+        <description lang="en_GB">Proxies Kodi's web interface and selected management commands through an authenticated outbound WebSocket connection with diagnostics and binary-safe response handling.</description>
         <platform>all</platform>
         <license>MIT</license>
         <website>https://github.com/Dworrall21/kodiapp</website>
         <source>https://github.com/Dworrall21/kodiapp</source>
     </extension>
 </addon>
-<addon id="plugin.video.povfork" version="6.05.20" size="737553" name="POV Fork" provider-name="Dworrall21">
+<addon id="plugin.video.povfork" version="6.05.20" name="POV Fork" provider-name="Dworrall21">
 	<requires>
 		<import addon="xbmc.python" version="3.0.0" />
 		<import addon="script.module.requests" optional="true" />
@@ -26,8 +26,9 @@
 	<extension point="xbmc.addon.metadata">
 		<reuselanguageinvoker>true</reuselanguageinvoker>
 		<license>GNU GENERAL PUBLIC LICENSE. Version 3, 29 June 2007</license>
+		<disclaimer lang="en">The author of this addon does not host any of the content which is found and has no affiliation with any of the content providers.[CR]The author is in no way affiliated with Kodi, Team Kodi, or the XBMC Foundation.</disclaimer>
 		<summary>POV Fork — What you like to watch.[CR]</summary>
-		<description lang="en">POV Fork — A maintained fork of the POV video addon for Kodi.</description>
+		<description lang="en">POV Fork — A maintained fork of the POV video addon for Kodi. This is a Non-profit resource, organized solely for educational purposes which is protected under the Fair-Use doctrine of the Copyright Act, Specifically section 107, which does promote freedom of expression, by permitting the unlicensed use of copyright-protected works.</description>
 		<news>INFO: For latest changes see Changelog within add-on.</news>
 		<assets><icon>pov.png</icon><fanart>pov_fanart.png</fanart></assets>
 	</extension>
