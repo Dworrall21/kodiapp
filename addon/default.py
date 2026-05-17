@@ -27,7 +27,6 @@ import sys
 import threading
 import time
 import traceback
-import urllib.request
 import zipfile
 import zlib
 
@@ -35,8 +34,10 @@ import xbmc
 import xbmcaddon
 import xbmcvfs
 
-# ssl imported lazily to avoid UWP sandbox issues on Xbox
-ssl = None
+# urllib.request and ssl are lazy-loaded inside functions to avoid
+# UWP sandbox issues on Xbox Retail Mode. Both modules internally
+# import ssl which triggers certificate store access violations
+# during Kodi's pre-compilation check on Xbox.
 
 try:
     from iphone_bridge import (
@@ -71,10 +72,9 @@ except Exception:
         make_hello_message = None
         make_result_message = None
 
-ADDON = xbmcaddon.Addon()
-ADDON_ID = ADDON.getAddonInfo("id")
-ADDON_VERSION = ADDON.getAddonInfo("version")
-ADDON_NAME = ADDON.getAddonInfo("name") or ADDON_ID
+ADDON_ID = "script.xbox.proxy"
+ADDON_VERSION = "1.0.12"
+ADDON_NAME = "Xbox Web Proxy"
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 PROTOCOL_VERSION = 2
 MAX_FRAME_BYTES = 4 * 1024 * 1024
@@ -94,7 +94,8 @@ def log(msg, level=xbmc.LOGINFO):
 
 def setting(name, default=""):
     try:
-        value = ADDON.getSetting(name)
+        addon = xbmcaddon.Addon(ADDON_ID)
+        value = addon.getSetting(name)
         return value if value not in (None, "") else default
     except Exception:
         return default
@@ -156,10 +157,7 @@ class SimpleWebSocket(object):
         raw = socket.create_connection((self.cfg["bridge_host"], self.cfg["bridge_port"]), timeout=timeout)
         raw.settimeout(timeout)
         if self.cfg["use_tls"]:
-            global ssl
-            if ssl is None:
-                import ssl as _ssl
-                ssl = _ssl
+            import ssl
             ctx = ssl.create_default_context() if self.cfg["verify_tls"] else ssl._create_unverified_context()
             raw = ctx.wrap_socket(raw, server_hostname=self.cfg["bridge_host"])
         self.sock = raw
@@ -325,6 +323,7 @@ def send_error(ws, req_id, msg, status=500, response_type="error"):
 
 
 def handle_http(ws, data, cfg):
+    import urllib.request
     req_id = data.get("id", "unknown")
     try:
         req_id, method, path = validate_request(data)
@@ -403,6 +402,7 @@ def _safe_member_path(root, member):
 
 
 def install_zip_url(url):
+    import urllib.request
     if not url or not isinstance(url, str):
         raise ValueError("Missing zip_url")
     allowed_prefixes = (
@@ -466,6 +466,7 @@ def read_logs(lines):
 
 
 def check_http(cfg):
+    import urllib.request
     try:
         url = "http://%s:%s/jsonrpc" % (cfg["kodi_host"], cfg["kodi_port"])
         body = json.dumps({"jsonrpc": "2.0", "method": "JSONRPC.Ping", "id": "startup"}).encode("utf-8")
