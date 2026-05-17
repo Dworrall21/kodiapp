@@ -12,6 +12,10 @@
         <license>MIT</license>
         <website>https://github.com/Dworrall21/kodiapp</website>
         <source>https://github.com/Dworrall21/kodiapp</source>
+        <assets>
+            <icon>icon.png</icon>
+            <fanart>fanart.jpg</fanart>
+        </assets>
     </extension>
 </addon>
 <addon id="plugin.video.povfork" version="6.05.20" name="POV Fork" provider-name="Dworrall21">
