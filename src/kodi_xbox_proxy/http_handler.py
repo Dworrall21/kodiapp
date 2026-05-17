@@ -369,11 +369,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # --- POV Fork endpoints ---
 
-        if path in ("povfork/status", "povfork/status/"):
+        if path in ("povfork/status", "povfork/status/") or path.startswith("povfork/status?"):
             self.handle_povfork_status()
             return
 
-        if path in ("povfork/logs", "povfork/logs/"):
+        if path in ("povfork/logs", "povfork/logs/") or path.startswith("povfork/logs?"):
             lines = 200
             raw_query = urlsplit("/api/" + path).query
             for param in raw_query.split("&") if raw_query else []:

@@ -575,7 +575,7 @@ async function povforkRefresh() {
     const addon = (d.addon && d.addon.result) || {};
     const grid = document.getElementById('povforkStatus');
     grid.innerHTML = `
-      <div class="info-item"><label>Status</label><span>${d.addok ? 'Connected' : 'Check addon'}</span></div>
+      <div class="info-item"><label>Status</label><span>${d.addon ? 'Found' : 'Not installed'}</span></div>
       <div class="info-item"><label>Version</label><span>${addon.version || '—'}</span></div>
       <div class="info-item"><label>Enabled</label><span>${addon.enabled === true ? 'Yes' : addon.enabled === false ? 'No' : '—'}</span></div>
       <div class="info-item"><label>Path</label><span style="word-break:break-all;font-size:11px">${addon.path || '—'}</span></div>
