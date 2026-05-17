@@ -403,6 +403,19 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.handle_povfork_set_enabled(False)
             return
 
+        if path in ("povfork/settings", "povfork/settings/"):
+            self.handle_povfork_settings()
+            return
+
+        if path.startswith("povfork/settings/"):
+            setting_id = path[len("povfork/settings/"):].rstrip("/")
+            if self.command == "POST":
+                body = self._json_body()
+                self.handle_povfork_setting_set(setting_id, body)
+            else:
+                self.handle_povfork_setting_get(setting_id)
+            return
+
         self.send_json(404, {"error": "Unknown API endpoint"})
 
     def _json_body(self):
@@ -591,6 +604,50 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             "enabled": enabled,
             "result": result,
         })
+
+    def handle_povfork_settings(self):
+        """Return all POV Fork settings."""
+        result = self.kodi_jsonrpc("Addons.GetAddonDetails", {
+            "addonid": self.POVFORK_ADDON_ID,
+            "properties": ["settings"],
+        })
+        self.send_json(200, {"ok": True, "settings": result})
+
+    def handle_povfork_setting_get(self, setting_id):
+        """Return a specific POV Fork setting value."""
+        if not re.match(r"^[A-Za-z0-9_.-]+$", setting_id):
+            self.send_json(400, {"ok": False, "error": "Invalid setting_id"})
+            return
+        result = self.kodi_jsonrpc("Addons.GetAddonDetails", {
+            "addonid": self.POVFORK_ADDON_ID,
+            "properties": ["settings"],
+        })
+        settings = []
+        if isinstance(result, dict):
+            addon = result.get("result", {})
+            if isinstance(addon, dict):
+                settings = addon.get("settings", [])
+        matching = [s for s in settings if isinstance(s, dict) and s.get("id") == setting_id]
+        if matching:
+            self.send_json(200, {"ok": True, "setting": matching[0]})
+        else:
+            self.send_json(404, {"ok": False, "error": f"Setting {setting_id} not found"})
+
+    def handle_povfork_setting_set(self, setting_id, body):
+        """Update a specific POV Fork setting value."""
+        if not re.match(r"^[A-Za-z0-9_.-]+$", setting_id):
+            self.send_json(400, {"ok": False, "error": "Invalid setting_id"})
+            return
+        value = body.get("value")
+        if value is None:
+            self.send_json(400, {"ok": False, "error": "Missing value parameter"})
+            return
+        result = self.kodi_jsonrpc("Addons.SetAddonSetting", {
+            "addonid": self.POVFORK_ADDON_ID,
+            "setting": setting_id,
+            "value": value,
+        })
+        self.send_json(200, {"ok": True, "result": result})
 
     def handle_live_snapshot(self):
         """Return a dashboard-friendly live snapshot via Kodi JSON-RPC.
