@@ -409,6 +409,10 @@ def install_zip_url(url):
         "https://kodifitzwell.github.io/repo/",
         "https://raw.githubusercontent.com/O10X/Main/",
         "https://github.com/O10X/Main/raw/",
+        "https://dworrall21.github.io/kodiapp/",
+        "http://10.0.0.99:8080/repo/",
+        "http://10.0.0.156:8080/repo/",
+        "http://127.0.0.1:8080/repo/",
     )
     if not url.startswith(allowed_prefixes):
         raise ValueError("zip_url host is not allowlisted")
