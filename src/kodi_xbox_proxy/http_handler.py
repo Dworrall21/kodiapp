@@ -606,32 +606,35 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         })
 
     def handle_povfork_settings(self):
-        """Return all POV Fork settings."""
-        result = self.kodi_jsonrpc("Addons.GetAddonDetails", {
-            "addonid": self.POVFORK_ADDON_ID,
-            "properties": ["settings"],
-        })
-        self.send_json(200, {"ok": True, "settings": result})
+        """Return all POV Fork settings by requesting the addon to read its settings.xml."""
+        response = self.send_request_to_addon({
+            "type": "management",
+            "action": "get_povfork_settings",
+        }, timeout=ADDON_REQUEST_TIMEOUT)
+        if response is None:
+            self.send_json(503, {"error": "Xbox proxy addon not connected"})
+            return
+        body = response.get("body", {})
+        self.send_json(response.get("status", 200), body)
 
     def handle_povfork_setting_get(self, setting_id):
         """Return a specific POV Fork setting value."""
         if not re.match(r"^[A-Za-z0-9_.-]+$", setting_id):
             self.send_json(400, {"ok": False, "error": "Invalid setting_id"})
             return
-        result = self.kodi_jsonrpc("Addons.GetAddonDetails", {
-            "addonid": self.POVFORK_ADDON_ID,
-            "properties": ["settings"],
-        })
-        settings = []
-        if isinstance(result, dict):
-            addon = result.get("result", {})
-            if isinstance(addon, dict):
-                settings = addon.get("settings", [])
-        matching = [s for s in settings if isinstance(s, dict) and s.get("id") == setting_id]
-        if matching:
-            self.send_json(200, {"ok": True, "setting": matching[0]})
+        response = self.send_request_to_addon({
+            "type": "management",
+            "action": "get_povfork_setting",
+            "setting_id": setting_id,
+        }, timeout=ADDON_REQUEST_TIMEOUT)
+        if response is None:
+            self.send_json(503, {"error": "Xbox proxy addon not connected"})
+            return
+        body = response.get("body", {})
+        if body.get("ok"):
+            self.send_json(200, body)
         else:
-            self.send_json(404, {"ok": False, "error": f"Setting {setting_id} not found"})
+            self.send_json(404, body)
 
     def handle_povfork_setting_set(self, setting_id, body):
         """Update a specific POV Fork setting value."""

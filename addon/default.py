@@ -359,6 +359,60 @@ def handle_rpc(ws, data, cfg):
         send_error(ws, req_id, exc, 500, "command_result")
 
 
+def _get_povfork_settings():
+    """Read POV Fork's settings.xml and return all settings."""
+    import xml.etree.ElementTree as ET
+    try:
+        addon = xbmcaddon.Addon("plugin.video.povfork")
+        path = addon.getAddonInfo("path")
+        settings_path = os.path.join(path, "resources", "settings.xml")
+        with open(settings_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        root = ET.fromstring(content)
+        settings = []
+        for cat in root.findall(".//category"):
+            cat_label = cat.get("label", "")
+            for setting in cat.findall("setting"):
+                sid = setting.get("id", "")
+                if not sid:
+                    continue
+                settings.append({
+                    "id": sid,
+                    "label": setting.get("label", ""),
+                    "type": setting.get("type", ""),
+                    "default": setting.get("default", ""),
+                    "category": cat_label,
+                })
+        return {"ok": True, "settings": settings}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _get_povfork_setting(setting_id):
+    """Read a specific setting from POV Fork's settings.xml."""
+    import xml.etree.ElementTree as ET
+    try:
+        addon = xbmcaddon.Addon("plugin.video.povfork")
+        path = addon.getAddonInfo("path")
+        settings_path = os.path.join(path, "resources", "settings.xml")
+        with open(settings_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        root = ET.fromstring(content)
+        for cat in root.findall(".//category"):
+            for setting in cat.findall("setting"):
+                if setting.get("id") == setting_id:
+                    return {"ok": True, "setting": {
+                        "id": setting_id,
+                        "label": setting.get("label", ""),
+                        "type": setting.get("type", ""),
+                        "default": setting.get("default", ""),
+                        "category": cat.get("label", ""),
+                    }}
+        return {"ok": False, "error": f"Setting {setting_id} not found"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def handle_management(ws, data, cfg):
     req_id = data.get("id", "unknown")
     action = data.get("action", "")
@@ -379,6 +433,15 @@ def handle_management(ws, data, cfg):
             xbmc.executebuiltin("UpdateLocalAddons")
             xbmc.executebuiltin("UpdateAddonRepos")
             ws.send_json({"type": "management_result", "id": req_id, "status": 200, "body": {"ok": True, "action": action, "result": result}})
+            return
+        if action == "get_povfork_settings":
+            result = _get_povfork_settings()
+            ws.send_json({"type": "management_result", "id": req_id, "status": 200, "body": result})
+            return
+        if action == "get_povfork_setting":
+            setting_id = data.get("setting_id", "")
+            result = _get_povfork_setting(setting_id)
+            ws.send_json({"type": "management_result", "id": req_id, "status": 200, "body": result})
             return
         builtins = allowed.get(action)
         if not builtins:
