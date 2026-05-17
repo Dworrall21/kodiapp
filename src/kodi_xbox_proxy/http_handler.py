@@ -367,6 +367,42 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, {"events": state.latest_event_log})
             return
 
+        # --- POV Fork endpoints ---
+
+        if path in ("povfork/status", "povfork/status/"):
+            self.handle_povfork_status()
+            return
+
+        if path in ("povfork/logs", "povfork/logs/"):
+            lines = 200
+            raw_query = urlsplit("/api/" + path).query
+            for param in raw_query.split("&") if raw_query else []:
+                if param.startswith("lines="):
+                    try:
+                        lines = int(param.split("=", 1)[1])
+                    except ValueError:
+                        pass
+            self.handle_povfork_logs(lines)
+            return
+
+        if path in ("povfork/command", "povfork/command/"):
+            body = self._json_body()
+            self.handle_povfork_command(body)
+            return
+
+        if path in ("povfork/install", "povfork/install/"):
+            body = self._json_body()
+            self.handle_povfork_install(body)
+            return
+
+        if path in ("povfork/enable", "povfork/enable/"):
+            self.handle_povfork_set_enabled(True)
+            return
+
+        if path in ("povfork/disable", "povfork/disable/"):
+            self.handle_povfork_set_enabled(False)
+            return
+
         self.send_json(404, {"error": "Unknown API endpoint"})
 
     def _json_body(self):
@@ -430,6 +466,131 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if isinstance(body, dict) and "Unknown message type: management" in str(body):
             body["hint"] = "Installed add-on is older than v1.0.7. Publish v1.0.7, update once from Kodi's add-on manager, then these remote management buttons will work."
         self.send_json(response.get("status", 200), body)
+
+    # --- POV Fork handlers ---
+
+    POVFORK_ADDON_ID = "plugin.video.povfork"
+
+    def _povfork_addon_info(self):
+        """Get POV Fork addon details from Kodi via the proxy addon."""
+        return self.kodi_jsonrpc("Addons.GetAddonDetails", {
+            "addonid": self.POVFORK_ADDON_ID,
+            "properties": ["name", "version", "enabled", "path", "dependencies"],
+        })
+
+    def handle_povfork_status(self):
+        """Return POV Fork addon status, settings, and repo availability."""
+        addon_info = self._povfork_addon_info()
+        repo_status = repo_manager.status()
+        result = {
+            "addon": addon_info,
+            "repo": {
+                "local_source_url": repo_status.get("local_source_url"),
+                "gh_pages_url": repo_status.get("gh_pages_url"),
+                "latest_zip": repo_status.get("latest_static_zip"),
+            },
+        }
+        povfork_zip = os.path.join(repo_manager.REPO_STATIC, "plugin.video.povfork",
+                                   "plugin.video.povfork-6.05.20.zip")
+        result["repo"]["povfork_zip_exists"] = os.path.isfile(povfork_zip)
+        result["repo"]["povfork_zip_path"] = povfork_zip
+        self.send_json(200, result)
+
+    def handle_povfork_logs(self, lines=200):
+        """Return Kodi log lines filtered for POV Fork activity."""
+        response = self.send_request_to_addon("get_logs", {"lines": lines},
+                                              timeout=ADDON_REQUEST_TIMEOUT)
+        if response is None:
+            self.send_json(503, {"error": "Xbox proxy addon not connected",
+                                  "lines": [], "filtered": []})
+            return
+        body = response.get("body", {})
+        all_lines = body.get("lines", [])
+        if isinstance(all_lines, str):
+            all_lines = all_lines.split("\n")
+        filtered = [l for l in all_lines if "pov" in l.lower() or "povfork" in l.lower()]
+        self.send_json(200, {
+            "path": body.get("path"),
+            "total_lines": len(all_lines),
+            "filtered_lines": len(filtered),
+            "lines": filtered if filtered else all_lines[-50:],
+            "truncated_to": lines,
+        })
+
+    def handle_povfork_command(self, body):
+        """Send a command to POV Fork via Kodi JSON-RPC.
+
+        Actions: enable, disable, execute (run action), jsonrpc (raw method)
+        """
+        action = body.get("action", "")
+        if action == "enable":
+            self.handle_povfork_set_enabled(True)
+            return
+        if action == "disable":
+            self.handle_povfork_set_enabled(False)
+            return
+        if action == "execute":
+            pov_action = body.get("pov_action", "")
+            if not pov_action:
+                self.send_json(400, {"error": "Missing pov_action parameter"})
+                return
+            result = self.kodi_jsonrpc("Addons.ExecuteAddon", {
+                "addonid": self.POVFORK_ADDON_ID,
+                "params": [pov_action],
+            })
+            self.send_json(200, {"ok": True, "action": action, "result": result})
+            return
+        if action == "jsonrpc":
+            method = body.get("method", "")
+            params = body.get("params", {})
+            if not method:
+                self.send_json(400, {"error": "Missing method parameter"})
+                return
+            result = self.kodi_jsonrpc(method, params)
+            self.send_json(200, {"ok": True, "method": method, "result": result})
+            return
+        self.send_json(400, {"error": f"Unknown command action: {action}"})
+
+    def handle_povfork_install(self, body):
+        """Install or update POV Fork from the local repo or a zip URL."""
+        version = body.get("version")
+        zip_url = body.get("zip_url", "")
+
+        if not zip_url:
+            lan_ip = repo_manager.get_lan_ip()
+            zip_url = f"http://{lan_ip}:8080/repo/plugin.video.povfork/plugin.video.povfork-6.05.20.zip"
+            if version:
+                zip_url = f"http://{lan_ip}:8080/repo/plugin.video.povfork/plugin.video.povfork-{version}.zip"
+
+        response = self.roundtrip_to_addon({
+            "type": "management",
+            "action": "install_zip_url",
+            "addonid": self.POVFORK_ADDON_ID,
+            "zip_url": zip_url,
+        }, timeout=60)
+        if response is None:
+            self.send_json(503, {"error": "Xbox proxy addon not connected"})
+            return
+        resp_body = response.get("body", {})
+        self.send_json(response.get("status", 200), {
+            "ok": resp_body.get("ok", False),
+            "zip_url": zip_url,
+            "result": resp_body,
+        })
+
+    def handle_povfork_set_enabled(self, enabled):
+        """Enable or disable the POV Fork addon."""
+        result = self.kodi_jsonrpc("Addons.SetAddonEnabled", {
+            "addonid": self.POVFORK_ADDON_ID,
+            "enabled": enabled,
+        })
+        self.send_json(200, {
+            "ok": True,
+            "action": "enable" if enabled else "disable",
+            "addonid": self.POVFORK_ADDON_ID,
+            "enabled": enabled,
+            "result": result,
+        })
 
     def handle_live_snapshot(self):
         """Return a dashboard-friendly live snapshot via Kodi JSON-RPC.

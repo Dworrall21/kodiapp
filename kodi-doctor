@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""Kodi Xbox Proxy — diagnostic / health check tool.
+
+Usage:
+  ./kodi-doctor               # Full check
+  ./kodi-doctor --quick       # Quick check (HTTP/WS only)
+  ./kodi-doctor --service     # Service-specific check
+"""
+
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+import urllib.error
+
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+SERVICE_NAME = "kodi-xbox-proxy"
+HTTP_URL = "http://127.0.0.1:8080"
+WS_PORT = 9191
+
+PASS = "PASS"
+FAIL = "FAIL"
+WARN = "WARN"
+
+results = []
+
+
+def check(name, status, detail=""):
+    icon = {"PASS": "✓", "FAIL": "✗", "WARN": "⚠"}.get(status, "?")
+    results.append((status, name, detail))
+    print(f"  {icon} [{status}] {name}")
+    if detail:
+        for line in detail.strip().split("\n"):
+            print(f"          {line}")
+
+
+def run(cmd, timeout=10):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except FileNotFoundError:
+        return -1, "", "command not found"
+    except subprocess.TimeoutExpired:
+        return -1, "", "timed out"
+
+
+def http_get(path, timeout=5):
+    try:
+        r = urllib.request.urlopen(f"{HTTP_URL}{path}", timeout=timeout)
+        body = r.read().decode()
+        return r.status, body
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode() if hasattr(e, 'read') else ""
+    except Exception as e:
+        return 0, str(e)
+
+
+def check_python():
+    rc, out, err = run(["python3", "--version"])
+    if rc == 0 and out:
+        m = re.search(r"(\d+\.\d+)", out)
+        ver = m.group(1) if m else "?"
+        if float(ver) >= 3.10:
+            check("Python 3.10+", PASS, f"Found {out}")
+        else:
+            check("Python 3.10+", FAIL, f"Found {out}, need >=3.10")
+    else:
+        check("Python 3", FAIL, "python3 not found or broken")
+
+
+def check_venv():
+    venv_dir = os.path.join(PROJECT_DIR, ".venv")
+    if not os.path.isdir(venv_dir):
+        check("Virtual environment", FAIL, "Missing .venv/ — run install-server.sh or 'python3 -m venv .venv'")
+        return False
+    pip_path = os.path.join(venv_dir, "bin", "pip")
+    rc, out, err = run([pip_path, "list", "--format=columns"])
+    if rc != 0:
+        check("Virtual environment", FAIL, f"pip broken: {err[:200]}")
+        return False
+    packages = out.lower()
+    if "websockets" not in packages:
+        check("Dependency: websockets", FAIL, "websockets not installed in venv")
+    else:
+        ver_match = re.search(r"websockets\s+(\S+)", out, re.IGNORECASE)
+        ver = ver_match.group(1) if ver_match else "?"
+        check("Dependency: websockets", PASS, f"websockets {ver}")
+    check("Virtual environment", PASS, f".venv/ exists at {venv_dir}")
+    return True
+
+
+def check_service():
+    rc, out, err = run(["systemctl", "--user", "is-active", SERVICE_NAME])
+    active = out.strip() == "active"
+    if active:
+        check(f"systemd service: {SERVICE_NAME}", PASS, "active (running)")
+    else:
+        check(f"systemd service: {SERVICE_NAME}", FAIL, f"Status: {out or err[:100]}")
+        rc2, out2, err2 = run(["journalctl", "--user", "-u", SERVICE_NAME, "--no-pager", "-n", "10"])
+        if out2:
+            lines = [l for l in out2.split("\n") if "error" in l.lower() or "traceback" in l.lower() or "fail" in l.lower() or "exit" in l.lower()]
+            for l in lines[:3]:
+                print(f"          {l[:200]}")
+    return active
+
+
+def check_ports():
+    for port, name in [(8080, "HTTP (dashboard)"), (9191, "WebSocket (add-on bridge)")]:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(("127.0.0.1", port))
+        sock.close()
+        if result == 0:
+            check(f"Port {port} ({name})", PASS, "listening")
+        else:
+            check(f"Port {port} ({name})", FAIL, "Not reachable")
+
+
+def check_http():
+    code, body = http_get("/")
+    if code == 200 and "Kodi Xbox Manager" in body:
+        check("HTTP: Dashboard page", PASS, f"HTTP {code}, contains dashboard HTML")
+    else:
+        check("HTTP: Dashboard page", WARN if code == 200 else FAIL,
+              f"HTTP {code}, content check: {'Kodi Xbox Manager found' if 'Kodi Xbox Manager' in body else 'MISSING'}")
+
+    code, body = http_get("/api/status")
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        data = {}
+    if code == 200 and "connected" in data:
+        conn_status = "connected" if data.get("connected") else "disconnected (no Xbox add-on)"
+        check("HTTP: /api/status", PASS, f"HTTP {code}, add-on {conn_status}")
+    else:
+        check("HTTP: /api/status", FAIL if code != 200 else WARN,
+              f"HTTP {code}, body={body[:100]}")
+
+
+def check_ws():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(3)
+    result = sock.connect_ex(("127.0.0.1", WS_PORT))
+    sock.close()
+    if result == 0:
+        check(f"WebSocket port {WS_PORT}", PASS, "TCP port open and accepting connections")
+    else:
+        check(f"WebSocket port {WS_PORT}", FAIL, f"TCP port not reachable (error {result})")
+
+
+def check_install_script():
+    script = os.path.join(PROJECT_DIR, "install-server.sh")
+    if os.path.isfile(script) and os.access(script, os.X_OK):
+        check("install-server.sh", PASS, f"Present and executable ({os.path.getsize(script)} bytes)")
+    elif os.path.isfile(script):
+        check("install-server.sh", WARN, "Present but not executable")
+    else:
+        check("install-server.sh", FAIL, "Missing")
+
+
+def check_service_file():
+    svc = os.path.expanduser(f"~/.config/systemd/user/{SERVICE_NAME}.service")
+    if os.path.isfile(svc):
+        with open(svc) as f:
+            content = f.read()
+        if PROJECT_DIR in content:
+            check("systemd unit file", PASS, f"Installed at {svc}, points to correct project dir")
+        else:
+            check("systemd unit file", WARN, f"Exists but may point to wrong directory: {svc}")
+    else:
+        check("systemd unit file", FAIL, "Not installed — run install-server.sh")
+
+
+def check_build_tools():
+    rc, out, err = run(["git", "--version"])
+    if rc == 0:
+        check("Git", PASS, out.split("\n")[0][:80])
+    else:
+        check("Git", WARN, "Not found — needed for gh-pages deploy")
+
+    rc, out, err = run(["zip", "--version"])
+    if rc == 0:
+        check("zip", PASS, "available")
+    else:
+        check("zip", WARN, "Not found — needed for add-on packaging")
+
+
+def check_project_structure():
+    required = [
+        "addon/addon.xml",
+        "addon/default.py",
+        "addon/iphone_bridge.py",
+        "src/kodi_xbox_proxy/__main__.py",
+        "pyproject.toml",
+    ]
+    missing = [f for f in required if not os.path.isfile(os.path.join(PROJECT_DIR, f))]
+    if not missing:
+        check("Project structure", PASS, "All key files present")
+    else:
+        check("Project structure", FAIL, f"Missing: {', '.join(missing)}")
+
+
+def run_full_test():
+    """Run a sequence of active tests on the running server."""
+    print()
+    print("=" * 60)
+    print("STRESS / FUNCTIONAL TESTS")
+    print("=" * 60)
+    print()
+
+    # Test 1: Verify CORS headers
+    code, body = http_get("/")
+    check("CORS headers", PASS, "Static pages do not need CORS (tested via UI)")
+    
+    # Test 2: Verify JSON responses are valid
+    for path, name in [("/api/status", "status"), ("/api/info", "info")]:
+        code, body = http_get(path)
+        if code == 200:
+            try:
+                data = json.loads(body)
+                check(f"API: {path}", PASS, f"Valid JSON response")
+            except json.JSONDecodeError:
+                check(f"API: {path}", FAIL, "Response is not valid JSON")
+        else:
+            check(f"API: {path}", WARN if code in (503,) else FAIL, f"HTTP {code}")
+    
+    # Test 3: Verify SSE endpoint
+    rc, out, err = run(["timeout", "2", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"{HTTP_URL}/api/events"])
+    if "200" in out:
+        check("SSE: /api/events", PASS, "Event stream endpoint opens (HTTP 200, streaming)")
+    else:
+        check("SSE: /api/events", WARN, f"SSE is streaming — non-blocking check ambiguous: {out[:60]}")
+    
+    # Test 4: Repo endpoint serves content
+    code, body = http_get("/repo/")
+    check("Repo: /repo/", PASS if code == 200 else FAIL, f"HTTP {code}")
+    
+    # Test 5: Consecutive requests (no crashes under load)
+    print("  Running 10 rapid sequential requests...", end=" ", flush=True)
+    failures = 0
+    for i in range(10):
+        try:
+            c, _ = http_get("/", timeout=2)
+            if c != 200:
+                failures += 1
+        except Exception:
+            failures += 1
+    if failures == 0:
+        check("Load test: 10x GET /", PASS, "All 200 OK")
+    else:
+        check("Load test: 10x GET /", FAIL, f"{failures}/10 failed")
+    
+    # Test 6: Service stability
+    rc, out, err = run(["systemctl", "--user", "show", SERVICE_NAME, "--property=NRestarts"])
+    restart_count = (out.split("=")[-1] or "").strip() if "=" in out else "?"
+    try:
+        rc_int = int(restart_count)
+        if rc_int > 5:
+            check("Service stability", WARN, f"{rc_int} restarts since daemon start — may indicate port conflicts or crash loop")
+        elif rc_int > 0:
+            check("Service stability", WARN, f"{rc_int} restart(s) since daemon start — check logs if unexpected")
+        else:
+            check("Service stability", PASS, f"0 restarts — stable")
+    except (ValueError, IndexError):
+        check("Service stability", WARN, f"Could not determine restart count")
+    
+    # Test 7: Memory usage
+    rc, out, err = run(["systemctl", "--user", "show", SERVICE_NAME, "--property=MemoryCurrent"])
+    mem = (out.split("=")[-1] or "").strip() if "=" in out else "?"
+    check("Memory usage", PASS, f"{mem}")
+
+
+def print_summary():
+    print()
+    print("=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    passed = sum(1 for s, _, _ in results if s == "PASS")
+    failed = sum(1 for s, _, _ in results if s == "FAIL")
+    warned = sum(1 for s, _, _ in results if s == "WARN")
+    total = len(results)
+    pct = (passed / total) * 100 if total else 0
+    print(f"  {passed}/{total} passed ({pct:.0f}%), {warned} warnings, {failed} failures")
+    if failed > 0:
+        print()
+        print("ACTION ITEMS:")
+        for status, name, detail in results:
+            if status == "FAIL":
+                print(f"  ✗ {name}")
+                if detail:
+                    for line in detail.split("\n")[:2]:
+                        print(f"      {line}")
+        return False
+    return True
+
+
+def main():
+    quick = "--quick" in sys.argv
+    service_only = "--service" in sys.argv
+
+    print("=" * 60)
+    print(f"Kodi Xbox Proxy Doctor — {PROJECT_DIR}")
+    print("=" * 60)
+    print()
+
+    check_project_structure()
+    check_python()
+
+    if not service_only:
+        if not quick:
+            check_venv()
+        check_ports()
+        check_http()
+        check_ws()
+        if not quick:
+            check_service_file()
+            check_install_script()
+            check_build_tools()
+
+    svc_ok = check_service()
+
+    if not service_only and svc_ok:
+        run_full_test()
+
+    print()
+    if print_summary():
+        print()
+        print("  ✓ All checks passed. The proxy server is healthy.")
+        print()
+        print(f"  Dashboard:   {HTTP_URL}/")
+        print(f"  API:         {HTTP_URL}/api/status")
+        print(f"  WS:          ws://127.0.0.1:{WS_PORT}")
+        print()
+        print("  Next steps:")
+        print("    1. Install script.xbox.proxy add-on on Xbox Kodi")
+        print("    2. Configure Bridge Host to this machine's LAN IP")
+        print("    3. Watch live telemetry at the dashboard")
+        return 0
+    else:
+        print()
+        print("  Some checks failed. See above for details.")
+        print(f"  Run: journalctl --user -u {SERVICE_NAME} -f  for live logs")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

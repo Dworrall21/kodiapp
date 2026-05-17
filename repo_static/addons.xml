@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addons>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.10" provider-name="Dworrall21">
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.11" provider-name="Dworrall21">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -13,5 +13,23 @@
         <website>https://github.com/Dworrall21/kodiapp</website>
         <source>https://github.com/Dworrall21/kodiapp</source>
     </extension>
+</addon>
+<addon id="plugin.video.povfork" version="6.05.20" size="737553" name="POV Fork" provider-name="Dworrall21">
+	<requires>
+		<import addon="xbmc.python" version="3.0.0" />
+		<import addon="script.module.requests" />
+	</requires>
+	<extension point="xbmc.python.pluginsource" library="resources/lib/router.py">
+		<provides>video</provides>
+	</extension>
+	<extension point="xbmc.service" library="resources/lib/service.py" />
+	<extension point="xbmc.addon.metadata">
+		<reuselanguageinvoker>true</reuselanguageinvoker>
+		<license>GNU GENERAL PUBLIC LICENSE. Version 3, 29 June 2007</license>
+		<summary>POV Fork — What you like to watch.[CR]</summary>
+		<description lang="en">POV Fork — A maintained fork of the POV video addon for Kodi.</description>
+		<news>INFO: For latest changes see Changelog within add-on.</news>
+		<assets><icon>pov.png</icon><fanart>pov_fanart.png</fanart></assets>
+	</extension>
 </addon>
 </addons>

@@ -81,6 +81,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   <div class="tab" onclick="showTab('events')">Event Log</div>
   <div class="tab" onclick="showTab('commands')">Commands</div>
   <div class="tab" onclick="showTab('manager')">Add-on Manager</div>
+  <div class="tab" onclick="showTab('povfork')">POV Fork</div>
   <div class="tab" onclick="showTab('webui')">Kodi Web UI</div>
 </div>
 <div class="content">
@@ -226,6 +227,41 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
         Kodi's web interface, tunneled through the Xbox.
       </p>
       <iframe id="kodiFrame" src="" style="width:100%;height:600px;border:1px solid #30363d;border-radius:6px;background:#0d1117;"></iframe>
+    </div>
+  </div>
+  <div class="panel" id="panel-povfork">
+    <div class="card">
+      <h3>POV Fork Status</h3>
+      <div class="btn-row">
+        <button class="btn" onclick="povforkRefresh()">Refresh Status</button>
+        <button class="btn secondary" onclick="povforkAction('enable')">Enable</button>
+        <button class="btn secondary" onclick="povforkAction('disable')">Disable</button>
+        <button class="btn secondary" onclick="povforkInstall()">Install / Update</button>
+      </div>
+      <div class="info-grid" id="povforkStatus">
+        <div class="info-item"><label>Status</label><span>Loading...</span></div>
+        <div class="info-item"><label>Version</label><span>—</span></div>
+        <div class="info-item"><label>Enabled</label><span>—</span></div>
+        <div class="info-item"><label>Path</label><span>—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>POV Fork Logs</h3>
+      <div class="btn-row">
+        <button class="btn" onclick="povforkLogs(100)">Last 100 lines</button>
+        <button class="btn secondary" onclick="povforkLogs(500)">Last 500 lines</button>
+        <button class="btn secondary" onclick="povforkClearLogs()">Clear</button>
+      </div>
+      <div class="log-viewer" id="povforkLogs">Click a button above to load POV Fork logs...</div>
+    </div>
+    <div class="card">
+      <h3>POV Fork Command</h3>
+      <div class="btn-row">
+        <input class="cmd-input" id="povforkCmdMethod" placeholder="JSON-RPC method (e.g. Addons.GetAddonDetails)" />
+        <input class="cmd-input" id="povforkCmdParams" placeholder='Params JSON (e.g. {"addonid":"plugin.video.povfork"})' style="width:250px" />
+        <button class="btn" onclick="povforkSendCommand()">Send</button>
+      </div>
+      <div class="result-box" id="povforkCmdResult">Results will appear here...</div>
     </div>
   </div>
 </div>
@@ -530,6 +566,97 @@ async function sendCustomCommand() {
 checkStatus();
 setInterval(checkStatus, 5000);
 setInterval(refreshLiveSnapshot, 5000);
+
+// --- POV Fork functions ---
+
+async function povforkRefresh() {
+  try {
+    const d = await api('/povfork/status');
+    const addon = (d.addon && d.addon.result) || {};
+    const grid = document.getElementById('povforkStatus');
+    grid.innerHTML = `
+      <div class="info-item"><label>Status</label><span>${d.addok ? 'Connected' : 'Check addon'}</span></div>
+      <div class="info-item"><label>Version</label><span>${addon.version || '—'}</span></div>
+      <div class="info-item"><label>Enabled</label><span>${addon.enabled === true ? 'Yes' : addon.enabled === false ? 'No' : '—'}</span></div>
+      <div class="info-item"><label>Path</label><span style="word-break:break-all;font-size:11px">${addon.path || '—'}</span></div>
+      <div class="info-item"><label>Repo Zip</label><span>${d.repo && d.repo.povfork_zip_exists ? 'Available' : 'Not found'}</span></div>
+      <div class="info-item"><label>Source</label><span>${d.repo && d.repo.local_source_url || '—'}</span></div>`;
+    showToast('POV Fork status refreshed', 'success');
+  } catch (e) {
+    showToast('POV Fork status failed: ' + e, 'error');
+  }
+}
+
+async function povforkAction(action) {
+  try {
+    const d = await api('/povfork/command', {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+    showToast('POV Fork ' + action + ': ' + (d.ok ? 'OK' : 'Failed'), d.ok ? 'success' : 'error');
+    povforkRefresh();
+  } catch (e) {
+    showToast('POV Fork ' + action + ' failed: ' + e, 'error');
+  }
+}
+
+async function povforkInstall() {
+  try {
+    showToast('Installing POV Fork...', 'success');
+    const d = await api('/povfork/install', { method: 'POST', body: JSON.stringify({}) });
+    showToast('POV Fork install: ' + (d.ok ? 'OK' : 'Check logs'), d.ok ? 'success' : 'error');
+  } catch (e) {
+    showToast('POV Fork install failed: ' + e, 'error');
+  }
+}
+
+async function povforkLogs(lines) {
+  try {
+    const d = await api('/povfork/logs?lines=' + lines);
+    const viewer = document.getElementById('povforkLogs');
+    const text = Array.isArray(d.lines) ? d.lines.join('\n') : (d.lines || '(no lines)');
+    let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    html = html.replace(/\b(ERROR|Traceback)\b/g, '<span class="error">$1</span>');
+    html = html.replace(/\b(WARN(?:ING)?)\b/g, '<span class="warn">$1</span>');
+    html = html.replace(/\b(INFO|NOTICE)\b/g, '<span class="info">$1</span>');
+    viewer.innerHTML = html || '(no log lines)';
+    viewer.scrollTop = viewer.scrollHeight;
+    showToast('Loaded ' + (d.filtered_lines || 0) + ' POV-related lines', 'success');
+  } catch (e) {
+    showToast('POV Fork logs failed: ' + e, 'error');
+  }
+}
+
+function povforkClearLogs() {
+  document.getElementById('povforkLogs').textContent = 'Logs cleared. Click a button above to reload.';
+}
+
+async function povforkSendCommand() {
+  const method = document.getElementById('povforkCmdMethod').value.trim();
+  const paramsStr = document.getElementById('povforkCmdParams').value.trim();
+  if (!method) { showToast('Enter a method name', 'error'); return; }
+  let params = {};
+  if (paramsStr) {
+    try { params = JSON.parse(paramsStr); } catch (e) { showToast('Invalid JSON params: ' + e, 'error'); return; }
+  }
+  try {
+    const d = await api('/povfork/command', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'jsonrpc', method, params }),
+    });
+    document.getElementById('povforkCmdResult').textContent = JSON.stringify(d, null, 2);
+    showToast('Command sent: ' + method, 'success');
+  } catch (e) {
+    showToast('Command failed: ' + e, 'error');
+  }
+}
+
+// Auto-refresh POV Fork status when tab is shown
+const _origShowTab = showTab;
+showTab = function(name) {
+  _origShowTab(name);
+  if (name === 'povfork') povforkRefresh();
+};
 </script>
 </body>
 </html>"""
