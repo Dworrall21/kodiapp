@@ -17,7 +17,7 @@
 <addon id="plugin.video.povfork" version="6.05.20" size="737553" name="POV Fork" provider-name="Dworrall21">
 	<requires>
 		<import addon="xbmc.python" version="3.0.0" />
-		<import addon="script.module.requests" />
+		<import addon="script.module.requests" optional="true" />
 	</requires>
 	<extension point="xbmc.python.pluginsource" library="resources/lib/router.py">
 		<provides>video</provides>
