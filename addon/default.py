@@ -684,10 +684,21 @@ def dispatch(ws, msg, cfg):
 
 def service_loop():
     monitor = xbmc.Monitor()
+
+    # PREVENTATIVE: Wait for Xbox network stack to initialize
+    log("Service started. Waiting for network stack...")
+    if monitor.waitForAbort(10):
+        return
+
     attempt = 0
     iphone_thread = None
     while not monitor.abortRequested():
         cfg = config()
+
+        # PREVENTATIVE: Warn about loopback addresses blocked on Xbox UWP
+        if cfg["bridge_host"] in ("127.0.0.1", "localhost", "0.0.0.0"):
+            log("WARNING: Loopback addresses are blocked on Xbox UWP. Change Bridge Host to a LAN IP.", xbmc.LOGWARNING)
+
         if cfg["enable_iphone_bridge"] and cfg["iphone_bridge_host"] and (iphone_thread is None or not iphone_thread.is_alive()):
             iphone_thread = threading.Thread(target=iphone_bridge_loop, args=(monitor, cfg))
             iphone_thread.daemon = True
@@ -708,16 +719,20 @@ def service_loop():
                     next_telemetry = time.time() + cfg["telemetry_interval_seconds"]
                 try:
                     dispatch(ws, ws.recv(), cfg)
+                except socket.timeout:
+                    # PREVENTATIVE: Expected timeout, yield back to monitor check
+                    continue
                 except Exception as exc:
-                    if is_timeout_error(exc):
-                        continue
-                    raise
+                    # PREVENTATIVE: Catch all to prevent service death
+                    log("Non-fatal error in dispatch loop: %s" % exc, xbmc.LOGERROR)
+                    monitor.waitForAbort(2)
         except Exception as exc:
             log("Bridge loop error: %s\n%s" % (exc, traceback.format_exc()), xbmc.LOGERROR)
         finally:
             if ws:
                 ws.close()
         attempt += 1
+        # PREVENTATIVE: Guaranteed backoff delay before reconnect
         delay = min(cfg["reconnect_max_seconds"], cfg["reconnect_min_seconds"] * (2 ** min(attempt, 5)))
         delay += random.randint(0, max(1, delay // 4))
         log("Bridge disconnected. Reconnecting in %s seconds." % delay, xbmc.LOGWARNING)
