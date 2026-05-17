@@ -607,8 +607,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def handle_povfork_settings(self):
         """Return all POV Fork settings by requesting the addon to read its settings.xml."""
-        response = self.send_request_to_addon({
-            "type": "management",
+        response = self.send_request_to_addon("management", {
             "action": "get_povfork_settings",
         }, timeout=ADDON_REQUEST_TIMEOUT)
         if response is None:
@@ -622,8 +621,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if not re.match(r"^[A-Za-z0-9_.-]+$", setting_id):
             self.send_json(400, {"ok": False, "error": "Invalid setting_id"})
             return
-        response = self.send_request_to_addon({
-            "type": "management",
+        response = self.send_request_to_addon("management", {
             "action": "get_povfork_setting",
             "setting_id": setting_id,
         }, timeout=ADDON_REQUEST_TIMEOUT)
