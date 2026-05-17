@@ -22,7 +22,6 @@ import json
 import os
 import random
 import socket
-import ssl
 import struct
 import sys
 import threading
@@ -36,6 +35,9 @@ import xbmc
 import xbmcaddon
 import xbmcvfs
 
+# ssl imported lazily to avoid UWP sandbox issues on Xbox
+ssl = None
+
 try:
     from iphone_bridge import (
         BridgeProtocolError,
@@ -48,16 +50,26 @@ try:
         make_result_message,
     )
 except Exception:
-    from addon.iphone_bridge import (
-        BridgeProtocolError,
-        encode_json_line,
-        extract_json_lines,
-        is_timeout_error,
-        make_auth_message,
-        make_error_message,
-        make_hello_message,
-        make_result_message,
-    )
+    try:
+        from addon.iphone_bridge import (
+            BridgeProtocolError,
+            encode_json_line,
+            extract_json_lines,
+            is_timeout_error,
+            make_auth_message,
+            make_error_message,
+            make_hello_message,
+            make_result_message,
+        )
+    except Exception:
+        BridgeProtocolError = ValueError
+        encode_json_line = None
+        extract_json_lines = None
+        is_timeout_error = None
+        make_auth_message = None
+        make_error_message = None
+        make_hello_message = None
+        make_result_message = None
 
 ADDON = xbmcaddon.Addon()
 ADDON_ID = ADDON.getAddonInfo("id")
@@ -144,6 +156,10 @@ class SimpleWebSocket(object):
         raw = socket.create_connection((self.cfg["bridge_host"], self.cfg["bridge_port"]), timeout=timeout)
         raw.settimeout(timeout)
         if self.cfg["use_tls"]:
+            global ssl
+            if ssl is None:
+                import ssl as _ssl
+                ssl = _ssl
             ctx = ssl.create_default_context() if self.cfg["verify_tls"] else ssl._create_unverified_context()
             raw = ctx.wrap_socket(raw, server_hostname=self.cfg["bridge_host"])
         self.sock = raw
@@ -387,12 +403,6 @@ def _safe_member_path(root, member):
 
 
 def install_zip_url(url):
-    """Install a Kodi add-on zip from a trusted HTTPS URL.
-
-    This intentionally only accepts HTTPS URLs from explicit Kodi add-on hosts
-    used by this project workflow. It extracts to special://home/addons and then
-    asks Kodi to rescan local add-ons.
-    """
     if not url or not isinstance(url, str):
         raise ValueError("Missing zip_url")
     allowed_prefixes = (
@@ -404,20 +414,17 @@ def install_zip_url(url):
         raise ValueError("zip_url host is not allowlisted")
     if not url.lower().split("?", 1)[0].endswith(".zip"):
         raise ValueError("zip_url must point to a .zip file")
-
     packages_dir = xbmcvfs.translatePath("special://home/addons/packages")
     addons_dir = xbmcvfs.translatePath("special://home/addons")
     if not os.path.isdir(packages_dir):
         os.makedirs(packages_dir)
     filename = url.rstrip("/").split("/")[-1].split("?", 1)[0]
     local_zip = os.path.join(packages_dir, filename)
-
     req = urllib.request.Request(url, headers={"User-Agent": "Kodi Xbox Proxy/%s" % ADDON_VERSION})
     with urllib.request.urlopen(req, timeout=60) as resp:
         payload = resp.read()
     with open(local_zip, "wb") as handle:
         handle.write(payload)
-
     with zipfile.ZipFile(local_zip) as zf:
         names = [name for name in zf.namelist() if name and not name.endswith("/")]
         if not names:
@@ -442,7 +449,6 @@ def install_zip_url(url):
                 os.makedirs(parent)
             with zf.open(member) as src, open(target, "wb") as dst:
                 dst.write(src.read())
-
     return {"url": url, "zip_path": local_zip, "addon_id": root, "bytes": len(payload)}
 
 
