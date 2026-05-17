@@ -101,6 +101,8 @@ def status() -> dict:
         "latest_static_zip": latest_repo_zip(),
         "addon_zip_exists": ADDON_ZIP.exists(),
         "addon_zip_size": ADDON_ZIP.stat().st_size if ADDON_ZIP.exists() else 0,
+        "povfork_zip_exists": (REPO_STATIC / "plugin.video.povfork" / "plugin.video.povfork-6.05.20.zip").exists(),
+        "povfork_zip_size": (REPO_STATIC / "plugin.video.povfork" / "plugin.video.povfork-6.05.20.zip").stat().st_size if (REPO_STATIC / "plugin.video.povfork" / "plugin.video.povfork-6.05.20.zip").exists() else 0,
         "gh_pages_worktree": str(GH_PAGES_WORKTREE),
         "gh_pages_worktree_exists": GH_PAGES_WORKTREE.exists(),
     }
