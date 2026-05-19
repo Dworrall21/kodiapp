@@ -1,23 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addons>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.12" provider-name="Dworrall21">
-    <requires>
-        <import addon="xbmc.python" version="3.0.0"/>
-    </requires>
-    <extension point="xbmc.service" library="default.py" start="startup"/>
-    <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">Web Interface Proxy for Xbox</summary>
-        <description lang="en_GB">Proxies Kodi's web interface and selected management commands through an authenticated outbound WebSocket connection with diagnostics and binary-safe response handling.</description>
-        <platform>all</platform>
-        <license>MIT</license>
-        <website>https://github.com/Dworrall21/kodiapp</website>
-        <source>https://github.com/Dworrall21/kodiapp</source>
-        <assets>
-            <icon>icon.png</icon>
-            <fanart>fanart.jpg</fanart>
-        </assets>
-    </extension>
-</addon>
+
 <addon id="plugin.video.povfork" version="6.05.20" name="POV Fork" provider-name="Dworrall21">
 	<requires>
 		<import addon="xbmc.python" version="3.0.0" />
@@ -37,4 +20,24 @@
 		<assets><icon>pov.png</icon><fanart>pov_fanart.png</fanart></assets>
 	</extension>
 </addon>
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.12" provider-name="Dworrall21">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+    </requires>
+    <extension point="xbmc.service" library="default.py" start="startup"/>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Web Interface Proxy for Xbox</summary>
+        <description lang="en_GB">Proxies Kodi's web interface and selected management commands through an authenticated outbound WebSocket connection with diagnostics and binary-safe response handling.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://github.com/Dworrall21/kodiapp</website>
+        <source>https://github.com/Dworrall21/kodiapp</source>
+        <assets>
+            <icon>icon.png</icon>
+            <fanart>fanart.jpg</fanart>
+        </assets>
+    </extension>
+</addon>
 </addons>
+
