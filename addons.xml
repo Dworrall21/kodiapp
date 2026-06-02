@@ -41,7 +41,7 @@
 <addon
   id="plugin.video.helix"
   name="Helix"
-  version="0.1.2"
+  version="0.1.3"
   provider-name="Helix">
   <requires>
     <import addon="xbmc.python" version="3.0.1"/>
