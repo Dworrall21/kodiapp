@@ -20,11 +20,6 @@
 		<assets><icon>pov.png</icon><fanart>pov_fanart.png</fanart></assets>
 	</extension>
 </addon>
-<?xml version="1.0" encoding="UTF-8"?>
-
-<?xml version="1.0" encoding="UTF-8"?>
-
-<?xml version="1.0" encoding="UTF-8"?>
 <addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.13" provider-name="Dworrall21">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -42,6 +37,38 @@
             <fanart>fanart.jpg</fanart>
         </assets>
     </extension>
+</addon>
+<addon
+  id="plugin.video.helix"
+  name="Helix"
+  version="0.1.1"
+  provider-name="Helix">
+  <requires>
+    <import addon="xbmc.python" version="3.0.1"/>
+    <import addon="script.module.requests" version="2.27.0" optional="true"/>
+  </requires>
+  <extension
+    point="xbmc.python.pluginsource"
+    library="default.py">
+    <provides>video</provides>
+  </extension>
+  <extension point="xbmc.service" library="service.py" start="startup"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Browse M3U with TMDB metadata + a built-in toolkit</summary>
+    <description lang="en_GB">[B]Helix[/B] is a single Kodi add-on that fuses a clean, TMDB-driven browse experience with a full maintenance toolkit. Open one icon to browse Movies / TV / Anime with poster art and info, or flip to the Tools tab for Account Manager, Maintenance, Backup/Restore, Speedtest, Logs and more. The browse side speaks plain M3U playlists (point it at your own source) and resolves links through Real-Debrid, AllDebrid, Premiumize or TorBox when configured.</description>
+    <disclaimer lang="en_GB">Helix is a content-neutral tool. It does not host, scrape or link to any third-party media. The user is responsible for the content of any M3U playlist or debrid service they configure.</disclaimer>
+    <language>en</language>
+    <platform>all</platform>
+    <license>MIT</license>
+    <source>https://example.local/helix</source>
+    <news>0.1.1 - Service: M3U auto-refresh + cache+news polls on independent timers. Debrid: HTTP transport hardened (retry 5xx/429). New: repo/ + build_repo.sh + install_test.py + deploy_repo.sh. Removed empty skins/. Setting: source.m3u.auto_refresh (default true).</news>
+    <assets>
+      <icon>resources/media/icon.png</icon>
+      <fanart>resources/media/fanart.jpg</fanart>
+      <screenshot>resources/media/screenshot-01.jpg</screenshot>
+      <screenshot>resources/media/screenshot-02.jpg</screenshot>
+    </assets>
+  </extension>
 </addon>
 </addons>
 
