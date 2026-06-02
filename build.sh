@@ -173,7 +173,7 @@ else
   fi
 fi
 
-rsync -a --delete "$REPO_STATIC/" "$GH_PAGES_WT/" --exclude='.git'
+rsync -a --delete --checksum "$REPO_STATIC/" "$GH_PAGES_WT/" --exclude='.git'
 
 cd "$GH_PAGES_WT"
 
