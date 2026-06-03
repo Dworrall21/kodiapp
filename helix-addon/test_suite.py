@@ -157,9 +157,11 @@ class GamepadClient:
 
     def _run(self, *args: str, timeout: int = 15) -> dict:
         try:
+            env = os.environ.copy()
+            env.setdefault("CDP_URL", XBOX_REMOTE_BASE)
             result = subprocess.run(
                 ["node", self.xbox_drive, *args],
-                capture_output=True, text=True, timeout=timeout,
+                capture_output=True, text=True, timeout=timeout, env=env,
             )
             return {"ok": result.returncode == 0, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
