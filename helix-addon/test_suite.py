@@ -60,6 +60,10 @@ CHROME_BIN = "/usr/bin/google-chrome"
 CHROME_USER_DATA_DIR = "/home/david/.cache/chrome-remote-play"
 CHROME_REMOTE_LOG = "/tmp/helix-xbox-chrome.log"
 
+# Global wait multiplier for live Remote Play steps.
+# 1.0 = original pace. Smaller = faster.
+STEP_WAIT_SCALE = 0.2
+
 HELIX_ADDON_ID = "plugin.video.helix"
 
 # Log patterns that count as a test failure when NEW after a test runs.
@@ -151,7 +155,7 @@ class KodiClient:
 class GamepadClient:
     """Send button presses via xbox-remote-drive (keyboard/gamepad shim)."""
 
-    def __init__(self, xbox_drive: Path = XBOX_DRIVE, default_hold_ms: int = 100):
+    def __init__(self, xbox_drive: Path = XBOX_DRIVE, default_hold_ms: int = 60):
         self.xbox_drive = str(xbox_drive)
         self.default_hold_ms = default_hold_ms
 
@@ -188,7 +192,7 @@ class GamepadClient:
             return self._run("tap", btn, str(hold))
         return self._run("tap", btn, str(hold))
 
-    def capture(self, out_path: str, delay_ms: int = 200) -> dict:
+    def capture(self, out_path: str, delay_ms: int = 50) -> dict:
         return self._run("capture", out_path, str(delay_ms), timeout=30)
 
 
@@ -326,7 +330,7 @@ class RemotePlayClient:
         # 4) Open a new tab on the Xbox launch URL.
         try:
             opened = self._json(f"/json/new?{quote(url, safe='')}", method="PUT")
-            time.sleep(2.0)
+            time.sleep(1.0)
             page = self._find_remote_page()
             if page:
                 self._activate(page["id"])
@@ -504,8 +508,8 @@ class Step:
     count: int = 1  # for repeated actions (e.g. down 3 times)
     hold_ms: Optional[int] = None  # for keyboard context menu
     mode: str = "kodi"  # "kodi" | "keyboard" | "auto"
-    pre_wait: float = 0.4  # wait BEFORE the action (let UI settle)
-    post_wait: float = 1.0  # wait AFTER the action (let UI render)
+    pre_wait: float = 0.05  # wait BEFORE the action (let UI settle)
+    post_wait: float = 0.15  # wait AFTER the action (let UI render)
 
 
 @dataclass
@@ -530,12 +534,18 @@ class TestRunner:
     ):
         self.output_dir = output_dir
         self.mode = mode
+        self.wait_scale = STEP_WAIT_SCALE
         self.kodi = KodiClient(proxy_url)
         self.pad = GamepadClient()
         self.remote = RemotePlayClient()
         self.keyboard = KeyboardSuiteClient(cdp_url=XBOX_REMOTE_BASE)
         self.results: list[TestResult] = []
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _sleep(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        time.sleep(seconds * self.wait_scale)
 
     # --- input dispatch ---
 
@@ -590,9 +600,9 @@ class TestRunner:
         if test.get("start", "open_helix") == "open_helix":
             before_live = self.kodi.live()
             print(f"    [live before] {summarize_live_snapshot(before_live)}")
-            time.sleep(0.3)
+            self._sleep(0.1)
             self.kodi.open_addon()
-            time.sleep(2.0)  # addon load
+            self._sleep(1.0)  # addon load
             after_live = self.kodi.live()
             print(f"    [live after ] {summarize_live_snapshot(after_live)}")
             shot = self._screenshot(test_dir, 0, "open_helix_root")
@@ -616,11 +626,11 @@ class TestRunner:
             if not step.label:
                 step.label = step.action
 
-            time.sleep(step.pre_wait)
+            self._sleep(step.pre_wait)
             before_live = self.kodi.live()
             print(f"    [step {idx:02d} before] {summarize_live_snapshot(before_live)}")
             resp, used_mode = self._do_input(step, status)
-            time.sleep(step.post_wait)
+            self._sleep(step.post_wait)
             after_live = self.kodi.live()
             print(f"    [step {idx:02d} after ] {summarize_live_snapshot(after_live)}")
             shot = self._screenshot(test_dir, idx, f"{step.action}_{step.label}")
@@ -646,11 +656,11 @@ class TestRunner:
 
             # Repeat action N times if count > 1
             for _ in range(step.count - 1):
-                time.sleep(step.pre_wait)
+                self._sleep(min(step.pre_wait, 0.03))
                 cont_before = self.kodi.live()
                 print(f"    [step {idx:02d} before] {summarize_live_snapshot(cont_before)}")
                 _resp, _used = self._do_input(step, status)
-                time.sleep(step.post_wait)
+                self._sleep(min(step.post_wait, 0.08))
                 cont_after = self.kodi.live()
                 print(f"    [step {idx:02d} after ] {summarize_live_snapshot(cont_after)}")
                 shot = self._screenshot(test_dir, idx, f"{step.action}_cont")
@@ -669,8 +679,8 @@ class TestRunner:
                 idx += 1
 
         # Post-test: fetch fresh logs and diff for new errors
-        time.sleep(1.0)
-        after_logs = self.kodi.logs(300)
+        self._sleep(0.15)
+        after_logs = self.kodi.logs(120)
         new_err_count, err_samples = count_new_errors(before_logs, after_logs)
         result.new_errors = new_err_count
         result.error_samples = err_samples[:5]
@@ -702,7 +712,7 @@ class TestRunner:
             result.notes = f"{resp.get('mode')} | {resp.get('title') or resp.get('url') or 'Xbox Remote Play'}"
 
         # Capture one screenshot of the remote play surface after launch/focus.
-        time.sleep(1.0)
+        self._sleep(0.5)
         shot_path = setup_dir / "00_remote_play.png"
         shot = self.pad.capture(str(shot_path), delay_ms=250)
         if shot.get("ok"):
@@ -879,8 +889,8 @@ TESTS: list[dict] = [
         # Topbar (1) → ── Browse ── (2) → Movies (3) = 2 downs
         "steps": [
             {"action": "down", "label": "skip_topbar", "count": 2},
-            {"action": "select", "label": "open_movies", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_movies", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
     {
@@ -889,8 +899,8 @@ TESTS: list[dict] = [
         # Topbar (1) → ── Browse ── (2) → Movies (3) → TV (4) = 3 downs
         "steps": [
             {"action": "down", "label": "skip_to_tv", "count": 3},
-            {"action": "select", "label": "open_tv", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_tv", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
     {
@@ -899,8 +909,8 @@ TESTS: list[dict] = [
         # 4 downs
         "steps": [
             {"action": "down", "label": "skip_to_anime", "count": 4},
-            {"action": "select", "label": "open_anime", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_anime", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
 
@@ -911,8 +921,8 @@ TESTS: list[dict] = [
         # 5: Anime. 6: ── Discover ──. 7: Trending = 6 downs
         "steps": [
             {"action": "down", "label": "skip_to_trending", "count": 6},
-            {"action": "select", "label": "open_trending", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_trending", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
     {
@@ -920,8 +930,8 @@ TESTS: list[dict] = [
         "description": "Navigate Discover → Popular and confirm screen renders",
         "steps": [
             {"action": "down", "label": "skip_to_popular", "count": 7},
-            {"action": "select", "label": "open_popular", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_popular", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
     {
@@ -929,8 +939,8 @@ TESTS: list[dict] = [
         "description": "Navigate Discover → Genres and confirm screen renders",
         "steps": [
             {"action": "down", "label": "skip_to_genres", "count": 8},
-            {"action": "select", "label": "open_genres", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_genres", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
     {
@@ -938,8 +948,8 @@ TESTS: list[dict] = [
         "description": "Navigate Discover → Discover (TMDB) and confirm screen renders",
         "steps": [
             {"action": "down", "label": "skip_to_discover", "count": 9},
-            {"action": "select", "label": "open_discover", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_discover", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
 
@@ -950,9 +960,9 @@ TESTS: list[dict] = [
         # 10: Discover. 11: ── Search ──. 12: Search = 11 downs
         "steps": [
             {"action": "down", "label": "skip_to_search", "count": 11},
-            {"action": "select", "label": "open_search", "post_wait": 2.0},
-            {"action": "back", "label": "close_keyboard", "post_wait": 1.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_search", "post_wait": 0.5},
+            {"action": "back", "label": "close_keyboard", "post_wait": 1.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 1.0},
         ],
     },
 
@@ -963,8 +973,8 @@ TESTS: list[dict] = [
         # 12: Search. 13: ── Library ──. 14: Favorites = 13 downs
         "steps": [
             {"action": "down", "label": "skip_to_favorites", "count": 13},
-            {"action": "select", "label": "open_favorites", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_favorites", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
 
@@ -977,9 +987,9 @@ TESTS: list[dict] = [
         # Without trakt: 14 Favorites, 15 ── Settings ──, 16 Helix Settings = 15 downs
         "steps": [
             {"action": "down", "label": "skip_to_settings", "count": 15},
-            {"action": "select", "label": "open_settings", "post_wait": 2.0},
-            {"action": "back", "label": "close_settings", "post_wait": 1.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_settings", "post_wait": 0.5},
+            {"action": "back", "label": "close_settings", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
     {
@@ -987,8 +997,8 @@ TESTS: list[dict] = [
         "description": "Open Helix Dashboard (debug, logs, settings editor)",
         "steps": [
             {"action": "down", "label": "skip_to_dashboard", "count": 16},
-            {"action": "select", "label": "open_dashboard", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_root", "post_wait": 1.5},
+            {"action": "select", "label": "open_dashboard", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_root", "post_wait": 0.75},
         ],
     },
 
@@ -998,7 +1008,7 @@ TESTS: list[dict] = [
         "description": "Switch from Browse to Tools home via top-bar action",
         "start": "open_helix",
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
         ],
     },
     {
@@ -1006,12 +1016,12 @@ TESTS: list[dict] = [
         "description": "Tools → Account Manager — render and back out",
         "start": "open_helix",  # root
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
             # Tools layout: 1 SWITCH TO BROWSE, 2 ── Accounts ──, 3 Account Manager = 2 downs
             {"action": "down", "label": "skip_to_accounts", "count": 2},
-            {"action": "select", "label": "open_account_manager", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_tools", "post_wait": 1.5},
-            {"action": "select", "label": "switch_back_to_browse", "post_wait": 2.0},
+            {"action": "select", "label": "open_account_manager", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_tools", "post_wait": 0.75},
+            {"action": "select", "label": "switch_back_to_browse", "post_wait": 0.5},
         ],
     },
     {
@@ -1019,14 +1029,14 @@ TESTS: list[dict] = [
         "description": "Tools → Test All Indexers — runs network tests on Torrentio/Comet/BitMagnet",
         "start": "open_helix",
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
             # 4: ── Scrapers ──, 5: Test All Indexers = 4 downs
             {"action": "down", "label": "skip_to_test_indexers", "count": 4},
             {"action": "select", "label": "run_test_indexers", "post_wait": 6.0},
             # text_viewer result is on screen; take a few more shots to capture results text
             {"action": "screenshot", "label": "indexer_results", "post_wait": 0.5},
-            {"action": "back", "label": "back_to_tools", "post_wait": 1.5},
-            {"action": "select", "label": "switch_back_to_browse", "post_wait": 2.0},
+            {"action": "back", "label": "back_to_tools", "post_wait": 0.75},
+            {"action": "select", "label": "switch_back_to_browse", "post_wait": 0.5},
         ],
     },
     {
@@ -1034,13 +1044,13 @@ TESTS: list[dict] = [
         "description": "Tools → Indexer Status — display current indexer configuration",
         "start": "open_helix",
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
             # 5: Test All Indexers, 6: Indexer Status = 5 downs
             {"action": "down", "label": "skip_to_indexer_status", "count": 5},
             {"action": "select", "label": "show_indexer_status", "post_wait": 5.0},
             {"action": "screenshot", "label": "indexer_status_results", "post_wait": 0.5},
-            {"action": "back", "label": "back_to_tools", "post_wait": 1.5},
-            {"action": "select", "label": "switch_back_to_browse", "post_wait": 2.0},
+            {"action": "back", "label": "back_to_tools", "post_wait": 0.75},
+            {"action": "select", "label": "switch_back_to_browse", "post_wait": 0.5},
         ],
     },
     {
@@ -1048,12 +1058,12 @@ TESTS: list[dict] = [
         "description": "Tools → Maintenance — render and back out",
         "start": "open_helix",
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
             # 7: ── Maintenance ──, 8: Maintenance = 7 downs
             {"action": "down", "label": "skip_to_maintenance", "count": 7},
-            {"action": "select", "label": "open_maintenance", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_tools", "post_wait": 1.5},
-            {"action": "select", "label": "switch_back_to_browse", "post_wait": 2.0},
+            {"action": "select", "label": "open_maintenance", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_tools", "post_wait": 0.75},
+            {"action": "select", "label": "switch_back_to_browse", "post_wait": 0.5},
         ],
     },
     {
@@ -1061,12 +1071,12 @@ TESTS: list[dict] = [
         "description": "Tools → Backup / Restore — render and back out",
         "start": "open_helix",
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
             # 8: Maintenance, 9: Backup / Restore = 8 downs
             {"action": "down", "label": "skip_to_backup", "count": 8},
-            {"action": "select", "label": "open_backup", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_tools", "post_wait": 1.5},
-            {"action": "select", "label": "switch_back_to_browse", "post_wait": 2.0},
+            {"action": "select", "label": "open_backup", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_tools", "post_wait": 0.75},
+            {"action": "select", "label": "switch_back_to_browse", "post_wait": 0.5},
         ],
     },
     {
@@ -1074,12 +1084,12 @@ TESTS: list[dict] = [
         "description": "Tools → Tools (submenu: speedtest, view logs, force update)",
         "start": "open_helix",
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
             # 9: Backup, 10: Tools = 9 downs
             {"action": "down", "label": "skip_to_tools_sub", "count": 9},
-            {"action": "select", "label": "open_tools_sub", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_tools", "post_wait": 1.5},
-            {"action": "select", "label": "switch_back_to_browse", "post_wait": 2.0},
+            {"action": "select", "label": "open_tools_sub", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_tools", "post_wait": 0.75},
+            {"action": "select", "label": "switch_back_to_browse", "post_wait": 0.5},
         ],
     },
     {
@@ -1087,12 +1097,12 @@ TESTS: list[dict] = [
         "description": "Tools → Notifications — render and back out",
         "start": "open_helix",
         "steps": [
-            {"action": "select", "label": "switch_to_tools", "post_wait": 2.0},
+            {"action": "select", "label": "switch_to_tools", "post_wait": 0.5},
             # 10: Tools, 11: Notifications = 10 downs
             {"action": "down", "label": "skip_to_notifications", "count": 10},
-            {"action": "select", "label": "open_notifications", "post_wait": 2.0},
-            {"action": "back", "label": "back_to_tools", "post_wait": 1.5},
-            {"action": "select", "label": "switch_back_to_browse", "post_wait": 2.0},
+            {"action": "select", "label": "open_notifications", "post_wait": 0.5},
+            {"action": "back", "label": "back_to_tools", "post_wait": 0.75},
+            {"action": "select", "label": "switch_back_to_browse", "post_wait": 0.5},
         ],
     },
 ]

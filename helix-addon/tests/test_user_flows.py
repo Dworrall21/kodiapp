@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
+from resources.lib import debrid_search
 from resources.lib import indexers
 from resources.lib import menus
 
@@ -163,7 +164,7 @@ def test_discover_titles_and_title_page_show_rich_metadata(monkeypatch, kodi_env
     monkeypatch.setattr(
         menus.debrid_search,
         "search_by_tmdb",
-        lambda media_type, tmdb_id: {
+        lambda media_type, tmdb_id, season=None, episode=None: {
             "1080p": [
                 {
                     "name": "Planet Nine WEB-DL",

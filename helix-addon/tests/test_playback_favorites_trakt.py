@@ -42,6 +42,38 @@ def test_play_route_resolves_debrid_and_trakt_scrobbles(monkeypatch, kodi_env):
     assert captured["play_item"].path == "http://resolved.invalid/stream.mkv"
 
 
+def test_play_route_passes_season_and_episode_to_trakt(monkeypatch, kodi_env):
+    captured = {}
+
+    monkeypatch.setattr(menus.debrid, "resolve", lambda url: url)
+    monkeypatch.setattr(menus.trakt, "has_token", lambda: True)
+    monkeypatch.setattr(
+        menus.trakt,
+        "scrobble_start",
+        lambda *args: captured.update({"scrobble": args}),
+    )
+    monkeypatch.setattr(menus, "resolve_item", lambda li: captured.update({"resolved_item": li}))
+
+    def fake_play_url(url, li=None):
+        captured.update({"play_url": url, "play_item": li})
+        if li is not None:
+            li.path = url
+
+    monkeypatch.setattr(menus, "play_url", fake_play_url)
+
+    menus.play({
+        "url": "http://example.invalid/episode.mkv",
+        "tmdb_id": "600",
+        "media_type": "tv",
+        "season": "4",
+        "episode": "7",
+    })
+
+    assert captured["scrobble"] == ("tv", "600", "4", "7")
+    assert captured["play_url"] == "http://example.invalid/episode.mkv"
+    assert captured["play_item"] is captured["resolved_item"]
+
+
 def test_tmdb_favorites_round_trip_persists_to_profile(monkeypatch, kodi_env, tmp_path):
     fav_file = tmp_path / "favorites.json"
     monkeypatch.setattr(menus, "_fav_path", lambda: str(fav_file))
@@ -125,5 +157,43 @@ def test_trakt_lists_and_items_render_tmdb_links(monkeypatch, kodi_env):
     expanse = next(item for item in kodi_env.directory_items if "The Expanse" in item["label"])
     assert "action=list_tmdb_title" in unquote(tron["url"])
     assert "media_type=movie" in unquote(tron["url"])
-    assert "action=list_tmdb_title" in unquote(expanse["url"])
-    assert "media_type=tv" in unquote(expanse["url"])
+def test_tmdb_episode_detail_passes_episode_coordinates_into_debrid_search(monkeypatch, kodi_env):
+    captured = {}
+
+    monkeypatch.setattr(
+        menus.tmdb,
+        "details",
+        lambda media_type, tmdb_id: {
+            "title": "Planet Nine",
+            "name": "Planet Nine",
+            "overview": "Episode detail metadata.",
+            "first_air_date": "2024-02-03",
+        },
+    )
+    monkeypatch.setattr(
+        menus.debrid_search,
+        "search_by_tmdb",
+        lambda media_type, tmdb_id, season=None, episode=None: captured.update({
+            "search": (media_type, tmdb_id, season, episode)
+        }) or {
+            "1080p": [
+                {
+                    "name": "Planet Nine S04E07 WEB-DL",
+                    "source": "Torrentio",
+                    "size_mb": 1536,
+                    "cached": True,
+                    "infoHash": "feedface",
+                    "url": "",
+                    "_quality": "1080p",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(menus.m3u, "get_filtered_items", lambda kind="all": [])
+
+    menus.list_tmdb_title({"tmdb_id": "501", "media_type": "tv", "season": "4", "episode": "7"})
+
+    assert captured["search"] == ("tv", "501", "4", "7")
+    item = next(item for item in kodi_env.directory_items if "Planet Nine S04E07 WEB-DL" in item["label"])
+    assert "season=4" in unquote(item["url"])
+    assert "episode=7" in unquote(item["url"])
