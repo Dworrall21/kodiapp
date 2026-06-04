@@ -1,37 +1,58 @@
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <addons>
+  <addon id="plugin.video.helix" name="Helix" version="0.4.0" provider-name="Helix">
+    <requires>
+      <import addon="xbmc.python" version="3.0.1" />
+      <import addon="script.module.requests" version="2.27.0" optional="true" />
+    </requires>
+    <extension point="xbmc.python.pluginsource" library="default.py" />
+    <extension point="xbmc.service" library="service.py" start="startup" />
+    <extension point="xbmc.addon.metadata">
+      <summary lang="en_GB">Browse debrid + M3U with TMDB metadata, toolkit, and dashboard</summary>
+      <description lang="en_GB">Helix fuses TMDB-driven browsing with a full toolkit. Debrid-primary with Torrentio/Comet/BitMagnet indexers. M3U fallback. Trakt OAuth. Dashboard.</description>
+      <disclaimer lang="en_GB">Content-neutral. No hosting/scraping of third-party media.</disclaimer>
+      <language>en</language>
+      <platform>all</platform>
+      <license>MIT</license>
+      <assets>
+        <icon>resources/media/icon.png</icon>
+        <fanart>resources/media/fanart.jpg</fanart>
+        <screenshot>resources/media/screenshot-01.jpg</screenshot>
+      </assets>
+      <news>0.4.0 - New: Trending/Popular/Genres top-level, search with debrid cache badges, Trakt trending integration. 0.3.0 - Torrentio/Comet/BitMagnet indexers, debrid cache check, EPG. 0.2.0 - Dashboard. 0.1.0 - Initial.</news>
+    </extension>
+  </addon>
+  <addon id="repository.helix" name="Helix Repository" version="0.0.1" provider-name="Helix">
+    <requires>
+      <import addon="xbmc.addon" version="12.0.0" />
+    </requires>
+    <extension point="xbmc.addon.repository" name="Helix Repository" />
+    <extension point="xbmc.addon.metadata">
+      <summary lang="en_GB">Helix add-on repository</summary>
+      <description lang="en_GB">Holds the Helix add-on and supporting tools.</description>
+      <language>en</language>
+      <platform>all</platform>
+      <license>MIT</license>
+    </extension>
+  </addon>
 
-<addon
-  id="plugin.video.helix"
-  name="Helix"
-  version="0.4.1"
-  provider-name="Helix">
-  <requires>
-    <import addon="xbmc.python" version="3.0.1"/>
-    <import addon="script.module.requests" version="2.27.0" optional="true"/>
-  </requires>
-  <extension
-    point="xbmc.python.pluginsource"
-    library="default.py">
-    <provides>video</provides>
-  </extension>
-  <extension point="xbmc.service" library="service.py" start="startup"/>
-  <extension point="xbmc.addon.metadata">
-    <summary lang="en_GB">Browse M3U + TMDB with debrid-cached torrents via Torrentio indexer</summary>
-    <description lang="en_GB">[B]Helix[/B] is a single Kodi add-on that fuses a clean, TMDB-driven browse experience with a full maintenance toolkit. Open one icon to browse Movies / TV / Anime with poster art and info, or flip to the Tools tab for Account Manager, Maintenance, Backup/Restore, Speedtest, Logs and more. Helix now includes a Torrentio indexer that converts TMDB titles to torrent streams, checks debrid cache, and presents quality-grouped results. Links resolve through Real-Debrid, AllDebrid, Premiumize or TorBox when configured.</description>
-    <disclaimer lang="en_GB">Helix is a content-neutral tool. It does not host, scrape or link to any third-party media. The user is responsible for the content of any M3U playlist or debrid service they configure.</disclaimer>
-    <language>en</language>
-    <platform>all</platform>
-    <license>MIT</license>
-    <source>https://example.local/helix</source>
-    <news>0.4.0 - New: EPG/XMLTV guide for Live TV channels — parse XMLTV data from URL, now/next programme overlay on channel listings, full grid guide view (4-hour window), per-channel programme list with times and descriptions. New epg.xmltv_url setting. EPG refresh from M3U listings and Dashboard actions. M3U parser now stores tvg-id/tvg-name for EPG channel mapping. 0.3.0 - New: Torrentio indexer integration — TMDB movie browsing now fetches debrid-cached torrent streams with quality grouping (4K/1080p/720p/480p) and seed counts. New debrid_search module converts TMDB→IMDB ID, queries Torrentio API, checks debrid cache, and groups results by quality tier. Magnet support added to debrid resolver. New 'list_tmdb_title' and 'list_tmdb_titles' router actions. 0.2.0 - New: Dashboard mode (Debug / Logs / Settings / Actions / About). New: in-addon log viewer with Helix-only + errors-only filters and full-log export. New: flat settings list with one-tap edit (bool toggle / enum picker / text input). New: Action buttons — clear cache, refresh M3U, test TMDB key, test debrid, run speedtest, restart service, dump debug to log. 0.1.3 - Fix: addonvar relative import (was .utils, now ..utils). Fix: strings.po converted from XML to proper gettext PO format. Service should now start cleanly.</news>
-    <assets>
-      <icon>resources/media/icon.png</icon>
-      <fanart>resources/media/fanart.jpg</fanart>
-      <screenshot>resources/media/screenshot-01.jpg</screenshot>
-      <screenshot>resources/media/screenshot-02.jpg</screenshot>
-    </assets>
-  </extension>
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.15" provider-name="OWL">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+    </requires>
+    <extension point="xbmc.service" library="default.py" start="startup"/>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">Web Interface Proxy for Xbox</summary>
+        <description lang="en_GB">Proxies Kodi's web interface and selected management commands through an authenticated outbound WebSocket connection with diagnostics and binary-safe response handling.</description>
+        <platform>all</platform>
+        <license>MIT</license>
+        <website>https://github.com/Dworrall21/kodiapp</website>
+        <source>https://github.com/Dworrall21/kodiapp</source>
+        <assets>
+            <icon>icon.png</icon>
+            <fanart>fanart.jpg</fanart>
+        </assets>
+    </extension>
 </addon>
-
 </addons>
