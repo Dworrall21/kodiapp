@@ -37,7 +37,9 @@
   </addon>
 
 <?xml version="1.0" encoding="UTF-8"?>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.15" provider-name="OWL">
+
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.16" provider-name="OWL">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -56,3 +58,4 @@
     </extension>
 </addon>
 </addons>
+
