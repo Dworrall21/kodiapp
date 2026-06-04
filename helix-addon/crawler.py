@@ -13,12 +13,14 @@ Captures full diagnostics per page: live stats, screenshot, log errors,
 item inventory.
 
 Usage:
-  ./crawler.py                                          # explore mode
-  ./crawler.py --mode browse
-  ./crawler.py --mode consume --max-depth 8
-  ./crawler.py --dry-run
-  ./crawler.py --output-dir /tmp/helix-crawl
-  ./test_suite.py --crawl --mode consume
+  #   ./crawler.py                                          # explore mode
+  #   ./crawler.py --mode browse
+  #   ./crawler.py --mode consume --max-depth 8
+  #   ./crawler.py --via gamepad                            # real Xbox button presses
+  #   ./crawler.py --dry-run
+  #   ./crawler.py --resume                                 # continue from checkpoint
+  #   ./crawler.py --output-dir /tmp/helix-crawl
+  #   ./test_suite.py --crawl --crawl-mode consume
 """
 
 from __future__ import annotations
@@ -48,6 +50,17 @@ CRAWL_ERROR_PATTERNS = list(ERROR_PATTERNS) + [
     re.compile(r"\[Helix\].*\bwarning\b.*\bfailed\b", re.IGNORECASE),
     re.compile(r"indexers\.http.*\bError\b", re.IGNORECASE),
     re.compile(r"indexers\.http.*\bgiving up\b", re.IGNORECASE),
+]
+
+# Error category classifiers — groups raw log lines by type for the summary
+ERROR_CLASSIFIERS: list[tuple[str, re.Pattern]] = [
+    ("tmdb",     re.compile(r"tmdb\s+", re.IGNORECASE)),
+    ("dns",      re.compile(r"gaierror|getaddrinfo", re.IGNORECASE)),
+    ("http",     re.compile(r"\bHTTPError\b|\bURLError\b", re.IGNORECASE)),
+    ("indexer",  re.compile(r"indexers\.http", re.IGNORECASE)),
+    ("script",   re.compile(r"Script error|Traceback|Exception", re.IGNORECASE)),
+    ("timeout",  re.compile(r"\bTimeout\b|\btimed out\b", re.IGNORECASE)),
+    ("addon",    re.compile(r"Addon.*failed|ExecuteAddon", re.IGNORECASE)),
 ]
 
 # ---------------------------------------------------------------------------
@@ -187,6 +200,7 @@ class Crawler:
         self._log_baseline: list[str] = []
         self._reaction_log: list[ActionReaction] = []
         self._last_action: str = ""
+        self._resume: bool = False
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -329,6 +343,67 @@ class Crawler:
 
     def _back(self, label: str = "") -> ActionReaction:
         return self._send_input("back", label=label)
+
+    # -- checkpoint ---------------------------------------------------------
+
+    CHECKPOINT_FILE = "checkpoint.json"
+
+    def _save_checkpoint(self):
+        """Save partial progress so we can resume after interruption."""
+        if self.dry_run:
+            return
+        cp = {
+            "visited": sorted(self.visited),
+            "total_pages_visited": len(self.page_log),
+            "total_items_found": self.total_items_found,
+            "total_folders_entered": self.total_folders_entered,
+            "total_playback_attempts": self.total_playback_attempts,
+            "total_playback_success": self.total_playback_success,
+            "_page_error_count": self._page_error_count,
+            "_log_baseline": self._log_baseline,
+        }
+        try:
+            (self.output_dir / self.CHECKPOINT_FILE).write_text(json.dumps(cp, indent=2))
+        except Exception:
+            pass
+
+    def _load_checkpoint(self) -> bool:
+        """Load checkpoint if it exists.  Returns True if state was restored."""
+        cp_path = self.output_dir / self.CHECKPOINT_FILE
+        if not cp_path.is_file():
+            return False
+        try:
+            cp = json.loads(cp_path.read_text())
+            self.visited = set(cp.get("visited", []))
+            self.total_items_found = cp.get("total_items_found", 0)
+            self.total_folders_entered = cp.get("total_folders_entered", 0)
+            self.total_playback_attempts = cp.get("total_playback_attempts", 0)
+            self.total_playback_success = cp.get("total_playback_success", 0)
+            self._page_error_count = cp.get("_page_error_count", 0)
+            self._log_baseline = cp.get("_log_baseline", [])
+            # If we have pages saved we can't truly replay the stack, but
+            # the visited set prevents re-exploring already-covered branches.
+            print(f"  Checkpoint loaded: {cp.get('total_pages_visited', '?')} pages already visited")
+            return True
+        except Exception as exc:
+            print(f"  Checkpoint load failed: {exc}")
+            return False
+
+    # -- error classification -----------------------------------------------
+
+    def _classify_errors(self, err_lines: list[str]) -> dict[str, int]:
+        """Categorise error lines by type.  Returns {category: count}."""
+        counts: dict[str, int] = {}
+        for line in err_lines:
+            matched = False
+            for cat, pat in ERROR_CLASSIFIERS:
+                if pat.search(line):
+                    counts[cat] = counts.get(cat, 0) + 1
+                    matched = True
+                    break
+            if not matched:
+                counts["other"] = counts.get("other", 0) + 1
+        return counts
 
     def _stop_playback(self):
         """Stop any active Kodi player."""
@@ -517,12 +592,30 @@ class Crawler:
 
         if not self.dry_run:
             self._log_baseline = self._logs()
+
+            # Checkpoint restore
+            if self._resume:
+                self._load_checkpoint()
+                print("  (resume mode — visited branches will be skipped)\n")
+
             ok = self._open_helix()
             if not ok:
                 print("ERROR: could not open Helix addon")
                 return {"status": "failed", "error": "open_helix failed"}
 
-        self._crawl_page(depth=0, parent_label="root")
+        try:
+            self._crawl_page(depth=0, parent_label="root")
+        except KeyboardInterrupt:
+            print("\n\n  ⚑ Interrupted — saving checkpoint...")
+            self._save_checkpoint()
+            print("  Checkpoint saved.  Resume later with --resume.")
+            print(f"  Visited {len(self.visited)} route(s), {len(self.page_log)} page(s).\n")
+
+        # Aggregate error categories across all pages
+        all_errs: list[str] = []
+        for p in self.page_log:
+            all_errs.extend(p.log_errors)
+        err_categories = self._classify_errors(all_errs)
 
         report = {
             "status": "complete",
@@ -538,12 +631,20 @@ class Crawler:
             "total_actions": len(self._reaction_log),
             "total_page_transitions": sum(1 for r in self._reaction_log if r.transition == "page_changed"),
             "total_errors_spikes": sum(1 for r in self._reaction_log if r.transition == "error_spike"),
+            "error_categories": err_categories,
             "pages": [asdict(p) for p in self.page_log],
             "reactions": [asdict(r) for r in self._reaction_log],
             "visited_keys": sorted(self.visited),
         }
         report_path = self.output_dir / "report.json"
         report_path.write_text(json.dumps(report, indent=2, default=str))
+
+        # Clean up checkpoint when crawl completes normally
+        if not self.dry_run:
+            try:
+                (self.output_dir / self.CHECKPOINT_FILE).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         print(f"\n{'='*50}")
         print(f"Report: {report_path}")
@@ -558,11 +659,17 @@ class Crawler:
         if self.total_playback_attempts:
             print(f"Playback success:   {report['total_playback_success']} / {self.total_playback_attempts}")
         print(f"Diagnostic errors:  {report['total_diagnostic_errors']}")
+        if err_categories:
+            cats = "  ".join(f"{k}={v}" for k, v in sorted(err_categories.items()) if v > 0)
+            print(f"Error breakdown:    {cats}")
 
+        issues = []
         if self._page_error_count:
-            print(f"\n  ** {self._page_error_count} diagnostic issue(s) detected! **")
+            issues.append(f"{self._page_error_count} diagnostic issue(s) detected")
         if self.total_playback_attempts and self.total_playback_success < self.total_playback_attempts:
-            print(f"  ** {self.total_playback_attempts - self.total_playback_success} playback failure(s) **")
+            issues.append(f"{self.total_playback_attempts - self.total_playback_success} playback failure(s)")
+        if issues:
+            print(f"\n  ** {'; '.join(issues)} **")
         print(f"{'='*50}\n")
 
         return report
@@ -632,6 +739,9 @@ class Crawler:
         if snap.log_errors:
             for err in snap.log_errors[:3]:
                 print(f"{'  ' * depth}  [ERR] {err[:120]}")
+
+        # Save progress checkpoint
+        self._save_checkpoint()
 
     # -- fallback container probe (no nav.item entries) -------------------
 
@@ -704,7 +814,7 @@ def main():
                     help="input path: kodi=JSON-RPC (default), gamepad=xbox-drive.mjs")
     ap.add_argument("--skip-screenshots", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--resume", action="store_true", help="resume from checkpoint (NYI)")
+    ap.add_argument("--resume", action="store_true", help="resume from checkpoint (loads visited set)")
     args = ap.parse_args()
 
     c = Crawler(
@@ -715,6 +825,7 @@ def main():
         skip_screenshots=args.skip_screenshots,
         dry_run=args.dry_run,
     )
+    c._resume = args.resume
     report = c.crawl()
     return 0 if report.get("status") == "complete" else 1
 
