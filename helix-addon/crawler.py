@@ -27,7 +27,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -204,6 +207,15 @@ class Crawler:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # SIGTERM handler — save checkpoint so report data isn't lost
+        self._sigterm_caught = False
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
+
+    def _handle_sigterm(self, signum, frame):
+        self._sigterm_caught = True
+        self._save_checkpoint()
+        sys.exit(143)
+
     # -- helpers ----------------------------------------------------------
 
     def _wait(self, seconds: float = 0.5):
@@ -224,12 +236,25 @@ class Crawler:
     def _capture(self, label: str) -> str:
         if self.skip_screenshots:
             return ""
+        out = str(self.output_dir / f"{label}.png")
+        # 1) Try CDP-based capture (xbox-drive.mjs) for best quality
         try:
-            out = str(self.output_dir / f"{label}.png")
             self.gamepad.capture(out)
-            return out
+            if os.path.getsize(out) > 1000:
+                return out
         except Exception:
-            return ""
+            pass
+        # 2) Fall back to system-level screenshot (gnome-screenshot)
+        try:
+            subprocess.run(
+                ["gnome-screenshot", "-f", out, "--window"],
+                capture_output=True, timeout=8,
+            )
+            if os.path.isfile(out) and os.path.getsize(out) > 1000:
+                return out
+        except Exception:
+            pass
+        return ""
 
     def _is_playing(self, live: dict) -> bool:
         try:
@@ -348,10 +373,37 @@ class Crawler:
 
     CHECKPOINT_FILE = "checkpoint.json"
 
+    def _build_report(self) -> dict:
+        """Build the current report dict from in-memory state."""
+        all_errs: list[str] = []
+        for p in self.page_log:
+            all_errs.extend(p.log_errors)
+        err_categories = self._classify_errors(all_errs)
+        return {
+            "status": "complete" if not self._sigterm_caught else "interrupted",
+            "mode": self.mode,
+            "via": self.via,
+            "output_dir": str(self.output_dir),
+            "total_pages_visited": len(self.page_log),
+            "total_items_found": self.total_items_found,
+            "total_folders_entered": self.total_folders_entered,
+            "total_playback_attempts": self.total_playback_attempts,
+            "total_playback_success": self.total_playback_success,
+            "total_diagnostic_errors": self._page_error_count,
+            "total_actions": len(self._reaction_log),
+            "total_page_transitions": sum(1 for r in self._reaction_log if r.transition == "page_changed"),
+            "total_errors_spikes": sum(1 for r in self._reaction_log if r.transition == "error_spike"),
+            "error_categories": err_categories,
+            "pages": [asdict(p) for p in self.page_log],
+            "reactions": [asdict(r) for r in self._reaction_log],
+            "visited_keys": sorted(self.visited),
+        }
+
     def _save_checkpoint(self):
-        """Save partial progress so we can resume after interruption."""
+        """Save progress so report data survives crashes / SIGTERM."""
         if self.dry_run:
             return
+        # Write checkpoint (compact state for resume)
         cp = {
             "visited": sorted(self.visited),
             "total_pages_visited": len(self.page_log),
@@ -364,6 +416,12 @@ class Crawler:
         }
         try:
             (self.output_dir / self.CHECKPOINT_FILE).write_text(json.dumps(cp, indent=2))
+        except Exception:
+            pass
+        # Write incremental report (full page data)
+        try:
+            report = self._build_report()
+            (self.output_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
         except Exception:
             pass
 
@@ -381,8 +439,6 @@ class Crawler:
             self.total_playback_success = cp.get("total_playback_success", 0)
             self._page_error_count = cp.get("_page_error_count", 0)
             self._log_baseline = cp.get("_log_baseline", [])
-            # If we have pages saved we can't truly replay the stack, but
-            # the visited set prevents re-exploring already-covered branches.
             print(f"  Checkpoint loaded: {cp.get('total_pages_visited', '?')} pages already visited")
             return True
         except Exception as exc:
@@ -459,18 +515,24 @@ class Crawler:
     def _open_helix(self) -> bool:
         if self.dry_run:
             return True
-        log_before = self._logs()
         self.kodi.open_addon()
         self._wait(2.0)
-        log_after = self._logs()
-        items = self._parse_nav_items(log_after)
-        errs = self._count_errors(log_after[len(log_before):])
+        # Check if Helix loaded by probing the current Kodi window
+        try:
+            win = self.kodi.command("GUI.GetProperties", {"properties": ["currentwindow"]})
+            label = (win or {}).get("currentwindow", {}).get("label", "")
+            if label:
+                print(f"  Helix window: {label}")
+                return True
+        except Exception:
+            pass
+        # Fallback: try nav.item detection
+        logs = self._logs()
+        items = self._parse_nav_items(logs)
         if items:
             return True
-        if errs:
-            print(f"  [WARN] open_helix: {len(errs)} new issues")
-            return True
-        return False
+        print("  [WARN] Could not confirm Helix page — proceeding anyway")
+        return True
 
     def _navigate_to_item(self, item: PageItem) -> bool:
         """Move focus to the item's visible index and select it."""
@@ -611,31 +673,9 @@ class Crawler:
             print("  Checkpoint saved.  Resume later with --resume.")
             print(f"  Visited {len(self.visited)} route(s), {len(self.page_log)} page(s).\n")
 
-        # Aggregate error categories across all pages
-        all_errs: list[str] = []
-        for p in self.page_log:
-            all_errs.extend(p.log_errors)
-        err_categories = self._classify_errors(all_errs)
-
-        report = {
-            "status": "complete",
-            "mode": self.mode,
-            "via": self.via,
-            "output_dir": str(self.output_dir),
-            "total_pages_visited": len(self.page_log),
-            "total_items_found": self.total_items_found,
-            "total_folders_entered": self.total_folders_entered,
-            "total_playback_attempts": self.total_playback_attempts,
-            "total_playback_success": self.total_playback_success,
-            "total_diagnostic_errors": self._page_error_count,
-            "total_actions": len(self._reaction_log),
-            "total_page_transitions": sum(1 for r in self._reaction_log if r.transition == "page_changed"),
-            "total_errors_spikes": sum(1 for r in self._reaction_log if r.transition == "error_spike"),
-            "error_categories": err_categories,
-            "pages": [asdict(p) for p in self.page_log],
-            "reactions": [asdict(r) for r in self._reaction_log],
-            "visited_keys": sorted(self.visited),
-        }
+        # Final report — already written incrementally by _save_checkpoint,
+        # but do a final pass to set correct status and clean up checkpoint.
+        report = self._build_report()
         report_path = self.output_dir / "report.json"
         report_path.write_text(json.dumps(report, indent=2, default=str))
 
@@ -746,41 +786,136 @@ class Crawler:
     # -- fallback container probe (no nav.item entries) -------------------
 
     def _try_container_probe(self, depth: int, action: str):
-        """Fallback when nav.item is missing — probe via JSON-RPC info labels
-        and walk what we can see."""
+        """Fallback when nav.item is missing — enumerate items via JSON-RPC
+        info labels and navigate into folders."""
         if self.dry_run:
-            print(f"{'  ' * depth}[{action}] no nav.item data (debug logging off?)")
+            print(f"{'  ' * depth}[{action}] no nav.item data (nav logging debug on Xbox)")
             return
 
+        # Read container state
         try:
-            # Read container count via info labels
-            count_data = self.kodi.command("XBMC.GetInfoLabels", {
+            raw = self.kodi.command("XBMC.GetInfoLabels", {
                 "labels": ["Container.NumItems", "Container.CurrentItem"]
             })
-            if not isinstance(count_data, dict):
-                print(f"{'  ' * depth}[{action}] container probe: no response")
+            labels = raw.get("result", {}) if isinstance(raw, dict) else raw
+            if not isinstance(labels, dict):
                 return
-            num = int(count_data.get("Container.NumItems", 0) or 0)
-            cur = int(count_data.get("Container.CurrentItem", 0) or 0)
+            num = int(labels.get("Container.NumItems", 0) or 0)
+            cur = int(labels.get("Container.CurrentItem", 0) or 0)
         except Exception:
-            print(f"{'  ' * depth}[{action}] container probe failed")
             return
 
         if num == 0:
             print(f"{'  ' * depth}[{action}]: empty container (leaf)")
             return
 
-        print(f"{'  ' * depth}[{action}] container: ~{num} items  (nav.item unavailable)")
+        # Enumerate items by reading labels one at a time
+        # Kodi only realizes visible items, so we sample what we can see
+        sample_count = min(num, self.SCROLL_ITEMS)
+        items: list[PageItem] = []
+        for i in range(sample_count):
+            try:
+                raw_items = self.kodi.command("XBMC.GetInfoLabels", {
+                    "labels": [
+                        f"Container().ListItem({i}).Label",
+                        f"Container().ListItem({i}).IsFolder",
+                        f"Container().ListItem({i}).FolderPath",
+                    ]
+                })
+                item_labels = raw_items.get("result", {}) if isinstance(raw_items, dict) else {}
+                if not isinstance(item_labels, dict):
+                    continue
+                raw_label = item_labels.get(f"Container().ListItem({i}).Label", "")
+                is_folder_raw = item_labels.get(f"Container().ListItem({i}).IsFolder", "")
+                folder_path = item_labels.get(f"Container().ListItem({i}).FolderPath", "")
+                label = self._strip_kodi_markup(raw_label) if raw_label else f"(item {i})"
+                is_folder = is_folder_raw.lower() in ("true", "1", "yes") or bool(folder_path)
+                items.append(PageItem(
+                    action=action,
+                    content="files",
+                    visible=i,
+                    section="",
+                    section_visible=i,
+                    kind="item",
+                    label=label,
+                    folder=is_folder,
+                    route=action,
+                    params=f"idx={i}",
+                    url=folder_path or "",
+                ))
+            except Exception:
+                pass
 
-        # In browse/consume mode, scroll a bit and snapshot
-        if self.mode in ("browse", "consume") and num > 3:
-            scroll = min(num - cur, self.SCROLL_ITEMS)
-            self._scroll_down(scroll)
+        if not items:
+            print(f"{'  ' * depth}[{action}]: could not enumerate items")
+            return
+
+        # Snapshot
+        snap = self._snapshot_page(action, items, self._logs())
+        self.page_log.append(snap)
+        self.total_items_found += len(items)
+
+        folders = [it for it in items if it.folder]
+        leaves = [it for it in items if not it.folder]
+        fl = ", ".join(it.label[:36] for it in folders[:4])
+        if len(folders) > 4:
+            fl += f" …(+{len(folders)-4})"
+        print(
+            f"{'  ' * depth}[{action}]  "
+            f"{len(items)} items  ({len(folders)}F/{len(leaves)}L) [container]  "
+            f"F=[{fl}]"
+        )
+
+        # Navigate into each folder using press+select
+        for idx, item in enumerate(folders):
+            rk = f"{action}:idx={idx}"
+            if rk in self.visited:
+                continue
+            self.visited.add(rk)
+
+            print(f"{'  ' * (depth+1)}→ {item.label[:56]}")
+            if self.dry_run:
+                continue
+
+            # Move focus to the item's position
+            steps = item.visible - cur
+            if steps > 0:
+                self._press("down", steps)
+            elif steps < 0:
+                self._press("up", abs(steps))
+            self._wait(0.2)
+            self._select()
+            self.total_folders_entered += 1
+            self._crawl_page(depth + 1, item.label)
             self._back()
 
-        # Still snapshot with whatever we have
-        snap = self._snapshot_page(action, [], self._logs())
-        self.page_log.append(snap)
+            # Refresh current position after back
+            try:
+                cl_raw = self.kodi.command("XBMC.GetInfoLabels", {
+                    "labels": ["Container.CurrentItem"]
+                })
+                cl = cl_raw.get("result", {}) if isinstance(cl_raw, dict) else {}
+                cur = int(cl.get("Container.CurrentItem", 0) or 0)
+            except Exception:
+                pass
+
+        # In consume mode, attempt playback on leaves
+        if self.mode == "consume" and leaves:
+            for leaf in leaves[:2]:
+                pb = self._attempt_playback(leaf, depth)
+                if pb:
+                    snap.playback = pb
+                    break
+
+        if snap.log_errors:
+            for err in snap.log_errors[:3]:
+                print(f"{'  ' * depth}  [ERR] {err[:120]}")
+        self._save_checkpoint()
+
+    @staticmethod
+    def _strip_kodi_markup(raw: str) -> str:
+        """Strip Kodi formatting tags like [COLOR ...], [B], [/B] etc."""
+        return re.sub(r"\[.*?\]", "", raw).strip()
 
     def _scroll_and_discover(self, depth: int, action: str):
         """Scroll a few items down to discover content not on the first screen.
