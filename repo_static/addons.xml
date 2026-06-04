@@ -36,14 +36,24 @@
     </extension>
   </addon>
 
+  <addon id="script.xbox.contentgate" name="Xbox Content Gate" version="1.0.0" provider-name="OWL">
+    <requires>
+      <import addon="xbmc.python" version="3.0.0" />
+    </requires>
+    <extension point="xbmc.service" library="default.py" start="startup" />
+    <extension point="xbmc.addon.metadata">
+      <summary lang="en_GB">Content rating gate with dual-PIN access control</summary>
+      <description lang="en_GB">Prompts for a passcode when playing content above a configurable rating threshold.</description>
+      <language>en</language>
+      <platform>all</platform>
+      <license>MIT</license>
+      <assets>
+        <icon>resources/icon.png</icon>
+      </assets>
+    </extension>
+  </addon>
 <?xml version="1.0" encoding="UTF-8"?>
-
-<?xml version="1.0" encoding="UTF-8"?>
-
-<?xml version="1.0" encoding="UTF-8"?>
-
-<?xml version="1.0" encoding="UTF-8"?>
-<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.17" provider-name="OWL">
+<addon id="script.xbox.proxy" name="Xbox Web Proxy" version="1.0.18" provider-name="OWL">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -62,4 +72,3 @@
     </extension>
 </addon>
 </addons>
-
