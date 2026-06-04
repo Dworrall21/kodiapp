@@ -40,7 +40,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -212,6 +212,8 @@ class RemotePlayClient:
         self.chrome_bin = CHROME_BIN
         self.user_data_dir = CHROME_USER_DATA_DIR
         self.chrome_log = CHROME_REMOTE_LOG
+        self.session_state_path = Path("/tmp/helix-xbox-remote-session.json")
+        self.active_page: Optional[dict] = self._load_session_state()
 
     def _json(self, path: str, method: str = "GET", timeout: float = 8.0) -> Any:
         req = urllib.request.Request(f"{self.base_url}{path}", method=method)
@@ -225,6 +227,38 @@ class RemotePlayClient:
             return True
         except Exception:
             return False
+
+    def _load_session_state(self) -> Optional[dict]:
+        try:
+            data = json.loads(self.session_state_path.read_text())
+            if isinstance(data, dict) and data.get("id"):
+                return data
+        except Exception:
+            pass
+        return None
+
+    def _save_session_state(self, page: dict) -> None:
+        try:
+            payload = {
+                "id": page.get("id"),
+                "title": page.get("title"),
+                "url": page.get("url"),
+                "timestamp": time.time(),
+            }
+            self.session_state_path.write_text(json.dumps(payload, indent=2))
+        except Exception:
+            pass
+
+    def _track_page(self, page: dict) -> None:
+        if not isinstance(page, dict):
+            return
+        self.active_page = {k: page.get(k) for k in ("id", "title", "url") if page.get(k) is not None}
+        self._save_session_state(page)
+
+    def active_window(self) -> Optional[dict]:
+        if self.active_page and self.active_page.get("id"):
+            return self.active_page
+        return self._load_session_state()
 
     def _ensure_chrome(self) -> dict:
         """Start Chrome with remote-debugging on 9222 if it's not already up.
@@ -274,11 +308,59 @@ class RemotePlayClient:
         data = self._json("/json/list")
         return data if isinstance(data, list) else []
 
+    def _is_xbox_launch_page(self, page: dict) -> bool:
+        url = str(page.get("url", "") or "")
+        title = str(page.get("title", "") or "")
+        if not url:
+            return False
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        path = (parsed.path or "").lower()
+        text = f"{url} {title}".lower()
+        return "xbox.com" in host and (
+            "/play/consoles/launch/" in path
+            or "/play/launch/" in path
+            or "living room xbox" in text
+        )
+
+    def _is_xbox_remote_page(self, page: dict) -> bool:
+        url = str(page.get("url", "") or "")
+        title = str(page.get("title", "") or "")
+        if not url:
+            return False
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        path = (parsed.path or "").lower()
+        text = f"{url} {title}".lower()
+        return "xbox.com" in host and (
+            self._is_xbox_launch_page(page)
+            or "/play/" in path
+            or path.endswith("/play")
+            or "xboxplay" in text
+            or "remote play" in text
+        )
+
+    def _is_xbox_consoles_page(self, page: dict) -> bool:
+        url = str(page.get("url", "") or "")
+        if not url:
+            return False
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        path = (parsed.path or "").lower()
+        return "xbox.com" in host and "/play/consoles" in path
+
     def _find_remote_page(self) -> Optional[dict]:
         pages = self.list_pages()
+        tracked = self.active_window()
+        if tracked and tracked.get("id"):
+            for page in pages:
+                if page.get("id") == tracked.get("id"):
+                    return page
         for page in pages:
-            url = page.get("url", "")
-            if "xbox.com/play" in url or "xboxplay" in url:
+            if self._is_xbox_launch_page(page):
+                return page
+        for page in pages:
+            if self._is_xbox_remote_page(page):
                 return page
         return None
 
@@ -294,12 +376,14 @@ class RemotePlayClient:
             page = self._find_remote_page()
             if page:
                 self._activate(page["id"])
+                self._track_page(page)
                 return {
                     "ok": True,
                     "mode": "focus-existing",
                     "id": page.get("id"),
                     "url": page.get("url"),
                     "title": page.get("title"),
+                    "window": {"id": page.get("id"), "title": page.get("title"), "url": page.get("url")},
                 }
         except Exception:
             pass
@@ -316,6 +400,7 @@ class RemotePlayClient:
             page = self._find_remote_page()
             if page:
                 self._activate(page["id"])
+                self._track_page(page)
                 return {
                     "ok": True,
                     "mode": "focus-existing-after-start",
@@ -323,6 +408,7 @@ class RemotePlayClient:
                     "id": page.get("id"),
                     "url": page.get("url"),
                     "title": page.get("title"),
+                    "window": {"id": page.get("id"), "title": page.get("title"), "url": page.get("url")},
                 }
         except Exception:
             pass
@@ -334,6 +420,7 @@ class RemotePlayClient:
             page = self._find_remote_page()
             if page:
                 self._activate(page["id"])
+                self._track_page(page)
                 return {
                     "ok": True,
                     "mode": "open-new",
@@ -342,6 +429,7 @@ class RemotePlayClient:
                     "id": page.get("id"),
                     "url": page.get("url"),
                     "title": page.get("title"),
+                    "window": {"id": page.get("id"), "title": page.get("title"), "url": page.get("url")},
                 }
             return {
                 "ok": False,
@@ -360,14 +448,23 @@ class KeyboardSuiteClient:
     can be driven from the physical keyboard during preflight/manual testing.
     """
 
-    def __init__(self, script: Path = XBOX_KEYBOARD, cdp_url: str = XBOX_REMOTE_BASE):
+    def __init__(self, script: Path = XBOX_KEYBOARD, cdp_url: str = XBOX_REMOTE_BASE, page_id: Optional[str] = None):
         self.script = Path(script)
         self.cdp_url = cdp_url
+        self.page_id = page_id
+        self.session_url: Optional[str] = None
+        self.session_title: Optional[str] = None
         self.proc: Optional[subprocess.Popen] = None
 
     def _spawn(self) -> subprocess.Popen:
         env = os.environ.copy()
         env["CDP_URL"] = self.cdp_url
+        if self.page_id:
+            env["XBOX_PAGE_ID"] = self.page_id
+        if self.session_url:
+            env["XBOX_SESSION_URL"] = self.session_url
+        if self.session_title:
+            env["XBOX_SESSION_TITLE"] = self.session_title
         proc = subprocess.Popen(
             ["node", str(self.script)],
             cwd=str(self.script.parent),
@@ -709,7 +806,9 @@ class TestRunner:
             result.status = "WARN"
             result.notes = resp.get("error", "remote play launch failed")
         else:
-            result.notes = f"{resp.get('mode')} | {resp.get('title') or resp.get('url') or 'Xbox Remote Play'}"
+            win = resp.get("window") or {}
+            win_id = win.get("id") or resp.get("id") or "?"
+            result.notes = f"{resp.get('mode')} | window={win_id} | {resp.get('title') or resp.get('url') or 'Xbox Remote Play'}"
 
         # Capture one screenshot of the remote play surface after launch/focus.
         self._sleep(0.5)
@@ -745,6 +844,14 @@ class TestRunner:
         setup_dir = self.output_dir / "_setup" / "launch_keyboard_suite"
         setup_dir.mkdir(parents=True, exist_ok=True)
 
+        page = self.remote.active_window() or {}
+        if page.get("id"):
+            self.keyboard.page_id = page["id"]
+        if page.get("url"):
+            self.keyboard.session_url = page["url"]
+        if page.get("title"):
+            self.keyboard.session_title = page["title"]
+
         resp = self.keyboard.launch()
         if not resp.get("ok", True):
             result.status = "WARN"
@@ -774,14 +881,8 @@ class TestRunner:
         """Return compact ready/not-ready state for Remote Play preflight."""
         remote_up = self.remote.is_up()
         pages = self.remote.list_pages() if remote_up else []
-        xbox_page = next(
-            (page for page in pages if "xbox.com/play" in page.get("url", "") or "xboxplay" in page.get("url", "")),
-            None,
-        )
-        consoles_page = next(
-            (page for page in pages if XBOX_REMOTE_URL in page.get("url", "")),
-            None,
-        )
+        xbox_page = next((page for page in pages if self.remote._is_xbox_remote_page(page)), None)
+        consoles_page = next((page for page in pages if self.remote._is_xbox_consoles_page(page)), None)
         keyboard_proc = self.keyboard.proc
         keyboard_ready = bool(keyboard_proc and keyboard_proc.poll() is None)
         keyboard_pid = getattr(keyboard_proc, "pid", None) if keyboard_proc else None
@@ -803,7 +904,10 @@ class TestRunner:
             {
                 "label": "Xbox session",
                 "ok": xbox_ok,
-                "detail": (xbox_page or {}).get("title") or (remote_setup or {}).get("title") or "no Xbox tab",
+                "detail": (
+                    f"id={(remote_setup or {}).get('id') or (xbox_page or {}).get('id') or '?'} | "
+                    f"{(xbox_page or {}).get('title') or (remote_setup or {}).get('title') or 'no Xbox tab'}"
+                ),
             },
             {
                 "label": "consoles page",
@@ -1129,6 +1233,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--skip-keyboard-launch", action="store_true",
                    help="do not auto-launch keyboard suite after Remote Play setup")
     p.add_argument("--status", action="store_true", help="print proxy + xbox status and exit")
+    p.add_argument("--crawl", action="store_true", help="run progressive crawler instead of smoke tests")
+    p.add_argument("--crawl-max-depth", type=int, default=20, help="max crawl depth (default: 20)")
+    p.add_argument("--crawl-mode", choices=["explore", "browse", "consume"],
+                   default="explore", help="crawler behaviour mode (default: explore)")
+    p.add_argument("--crawl-via", choices=["kodi", "gamepad"],
+                   default="kodi", help="crawler input path (default: kodi)")
     return p.parse_args(argv)
 
 
@@ -1142,6 +1252,19 @@ def print_plan(tests: list[dict], runner: TestRunner) -> None:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output_dir = Path(args.output_dir)
+
+    # --crawl mode: delegate to progressive crawler
+    if args.crawl:
+        from crawler import Crawler
+        c = Crawler(
+            output_dir=output_dir,
+            max_depth=args.crawl_max_depth,
+            mode=args.crawl_mode,
+            via=args.crawl_via,
+            dry_run=args.dry_run,
+        )
+        report = c.crawl()
+        return 0 if report.get("status") == "complete" else 1
 
     # Filter tests
     tests = list(TESTS)

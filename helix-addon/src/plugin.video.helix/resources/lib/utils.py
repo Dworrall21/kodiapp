@@ -738,7 +738,7 @@ def add_item(label, url=None, is_folder=True, info=None, art=None, properties=No
             _shorten(art_hint, 180),
             _shorten(prop_hint, 220),
         ),
-        "debug",
+        "info",
     )
     li = make_item(label, url, is_folder, info, art, properties, context, mime)
     ok = True

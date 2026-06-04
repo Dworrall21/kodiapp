@@ -77,7 +77,10 @@ def _http_get(url, timeout=10, retries=1):
             last_exc = exc
             if attempt < retries:
                 attempt += 1
-                xbmc.sleep(500)
+                # DNS failures (gaierror) need longer wait on Xbox
+                is_dns = isinstance(exc.reason, socket.gaierror) if hasattr(exc, 'reason') else False
+                sleep_ms = 2000 if is_dns and attempt <= 2 else 500
+                xbmc.sleep(sleep_ms)
                 continue
             log("indexers.http %r" % exc, "warn")
             return None
@@ -270,6 +273,11 @@ def _tmdb_to_imdb(tmdb_id, media_type):
     Returns IMDB ID string (e.g. "tt1375666") or None.
     """
     if not tmdb_id:
+        return None
+    # TMDB IDs are always integers — reject non-numeric values (e.g. format
+    # strings, IMDb IDs) before calling the API, so we never send junk paths.
+    if not re.match(r'^\d+$', str(tmdb_id)):
+        log("indexers: _tmdb_to_imdb: non-numeric tmdb_id %r, skipping" % tmdb_id, "warn")
         return None
     try:
         from . import tmdb as tmdb_mod
